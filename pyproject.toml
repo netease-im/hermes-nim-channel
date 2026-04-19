@@ -1,0 +1,9 @@
+[project]
+name = "hermes-nim-channel"
+version = "0.1.0"
+description = "Hermes Agent NIM channel adapter with a Node bridge for @yxim/nim-bot"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+

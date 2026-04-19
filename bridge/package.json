@@ -1,0 +1,14 @@
+{
+  "name": "hermes-nim-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node bridge for Hermes Agent NIM channel",
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs"
+  },
+  "dependencies": {
+    "@yxim/nim-bot": "^10.9.78"
+  }
+}
+
