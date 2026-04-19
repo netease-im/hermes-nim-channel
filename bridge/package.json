@@ -1,14 +1,23 @@
 {
-  "name": "hermes-nim-bridge",
+  "name": "@yxfe/hermes-nim-bridge",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "Node bridge for Hermes Agent NIM channel",
+  "bin": {
+    "hermes-nim-bridge": "index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "src"
+  ],
   "scripts": {
     "test": "node --test ./test/*.test.mjs"
+  },
+  "publishConfig": {
+    "registry": "http://npm.netease.im"
   },
   "dependencies": {
     "@yxim/nim-bot": "^10.9.78"
   }
 }
-

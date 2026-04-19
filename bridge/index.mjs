@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import process from "node:process";
 import readline from "node:readline";
 
@@ -16,6 +17,27 @@ import {
 } from "./src/protocol.mjs";
 
 let runtime = null;
+
+function writeStderr(args) {
+  const text = args
+    .map((value) => {
+      if (typeof value === "string") {
+        return value;
+      }
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    })
+    .join(" ");
+  process.stderr.write(`${text}\n`);
+}
+
+console.log = (...args) => writeStderr(args);
+console.info = (...args) => writeStderr(args);
+console.warn = (...args) => writeStderr(args);
+console.error = (...args) => writeStderr(args);
 
 function emit(message) {
   writeMessage(process.stdout, message);
@@ -239,4 +261,3 @@ process.on("SIGTERM", async () => {
   await cleanupRuntime();
   process.exit(0);
 });
-

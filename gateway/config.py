@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import os
 import shlex
+import shutil
 from typing import Any
 
 
@@ -93,14 +94,21 @@ def parse_nim_token(value: Any) -> NimCredentials | None:
     return NimCredentials(app_key=parts[0], account=parts[1], token=parts[2])
 
 
+def _default_bridge_command() -> list[str]:
+    installed = shutil.which("hermes-nim-bridge")
+    if installed:
+        return [installed]
+    return ["node", "bridge/index.mjs"]
+
+
 def _resolve_bridge_command(value: Any) -> list[str]:
     if value is None:
-        return ["node", "bridge/index.mjs"]
+        return _default_bridge_command()
     if isinstance(value, str):
         return shlex.split(value)
     if isinstance(value, (list, tuple)):
         parts = [str(item).strip() for item in value if str(item).strip()]
-        return parts or ["node", "bridge/index.mjs"]
+        return parts or _default_bridge_command()
     raise TypeError("bridge_command must be a string or sequence of strings")
 
 
@@ -140,4 +148,3 @@ def load_nim_config(
         debug=_as_bool(_pick(extra, env, "debug", "NIM_DEBUG"), default=False),
         raw_extra=extra,
     )
-
