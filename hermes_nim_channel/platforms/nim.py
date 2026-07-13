@@ -239,6 +239,12 @@ class NimAdapter(BasePlatformAdapter):
         return True
 
     def _is_allowed_direct_sender(self, sender_id: str) -> bool:
+        if self.resolved.p2p_policy == "disabled":
+            return False
+        if self.resolved.p2p_policy == "open":
+            return True
+        if self.resolved.p2p_policy == "allowlist":
+            return sender_id in self.resolved.p2p_allow_from
         if self.resolved.allow_all_users:
             return True
         if not self.resolved.allowed_users:

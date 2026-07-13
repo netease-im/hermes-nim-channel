@@ -126,6 +126,75 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(accepted))
         self.assertEqual("allowed-user", accepted[0].source.user_id)
 
+    async def test_direct_message_explicit_p2p_policy(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "p2p_policy": "allowlist",
+                    "p2p_allow_from": ["alice"],
+                }
+            ),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+
+        for sender in ("bob", "alice"):
+            await bridge.event_handler(
+                {
+                    "type": "event",
+                    "event": "message",
+                    "payload": {
+                        "session_type": "p2p",
+                        "sender_id": sender,
+                        "target_id": "bot",
+                        "text": "hello",
+                        "message_id": f"m-{sender}",
+                        "message_type": "text",
+                    },
+                }
+            )
+
+        self.assertEqual(1, len(accepted))
+        self.assertEqual("alice", accepted[0].source.user_id)
+
+    async def test_direct_message_disabled_p2p_policy(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "p2p_policy": "disabled",
+                }
+            ),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "p2p",
+                    "sender_id": "alice",
+                    "target_id": "bot",
+                    "text": "hello",
+                    "message_id": "m-disabled",
+                    "message_type": "text",
+                },
+            }
+        )
+
+        self.assertEqual([], accepted)
+
     async def test_group_message_requires_mention_and_allowlist(self) -> None:
         bridge = FakeBridge()
         adapter = NimAdapter(
