@@ -84,14 +84,22 @@ async function handleConnect(id, params) {
   }
 
   messageService.on("onReceiveMessages", (messages = []) => {
-    for (const message of messages) {
-      emit(
-        eventMessage(
-          "message",
-          toInboundMessage(message, config.credentials.account),
-        ),
-      );
-    }
+    void (async () => {
+      try {
+        for (const message of messages) {
+          emit(
+            eventMessage(
+              "message",
+              await toInboundMessage(message, config.credentials.account, nim),
+            ),
+          );
+        }
+      } catch (error) {
+        console.error(
+          `[nim] inbound message handling failed — error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    })();
   });
 
   await loginService.login(config.credentials.account, config.credentials.token, {

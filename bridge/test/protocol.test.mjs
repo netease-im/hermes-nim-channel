@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  buildConversationId,
   normalizeTarget,
   parseBridgeConfig,
   toInboundMessage,
@@ -78,8 +77,8 @@ test("video metadata coercion requires duration and dimensions", () => {
   );
 });
 
-test("inbound conversion extracts mention metadata", () => {
-  const payload = toInboundMessage(
+test("inbound conversion extracts mention metadata", async () => {
+  const payload = await toInboundMessage(
     {
       conversationId: "0|2|team-1",
       senderId: "alice",
@@ -99,8 +98,8 @@ test("inbound conversion extracts mention metadata", () => {
   assert.equal(eventMessage("message", payload).event, "message");
 });
 
-test("inbound media conversion preserves attachment metadata and placeholder text", () => {
-  const payload = toInboundMessage(
+test("inbound media conversion preserves attachment metadata and placeholder text", async () => {
+  const payload = await toInboundMessage(
     {
       conversationId: "0|1|alice",
       senderId: "alice",
@@ -113,6 +112,7 @@ test("inbound media conversion preserves attachment metadata and placeholder tex
         size: 1234,
         w: 320,
         h: 240,
+        sceneName: "image.scene",
       },
     },
     "bot",
@@ -121,4 +121,74 @@ test("inbound media conversion preserves attachment metadata and placeholder tex
   assert.equal(payload.text, "[Image] https://example.com/a.png");
   assert.equal(payload.attachment?.url, "https://example.com/a.png");
   assert.equal(payload.attachment?.width, 320);
+  assert.equal(payload.attachment?.scene_name, "image.scene");
+});
+
+test("audio inbound messages are transcribed before dispatch", async () => {
+  const calls = [];
+  const nim = {
+    V2NIMMessageService: {
+      async voiceToText(params) {
+        calls.push(params);
+        return "transcribed audio";
+      },
+    },
+  };
+
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|1|alice",
+      senderId: "alice",
+      receiverId: "bot",
+      messageType: 2,
+      messageClientId: "client-3",
+      attachment: {
+        url: "https://example.com/v.aac",
+        name: "voice.aac",
+        dur: 12,
+        sceneName: "voice.scene",
+      },
+    },
+    "bot",
+    nim,
+  );
+
+  assert.equal(payload.message_type, "audio");
+  assert.equal(payload.text, "transcribed audio");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    voiceUrl: "https://example.com/v.aac",
+    duration: 12,
+    sceneName: "voice.scene",
+    mimeType: "aac",
+    sampleRate: "16000",
+  });
+});
+
+test("audio transcription falls back to the placeholder when SDK fails", async () => {
+  const nim = {
+    V2NIMMessageService: {
+      async voiceToText() {
+        throw new Error("transcribe failed");
+      },
+    },
+  };
+
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|1|alice",
+      senderId: "alice",
+      receiverId: "bot",
+      messageType: 2,
+      text: "",
+      attachment: {
+        url: "https://example.com/v.aac",
+        dur: 12,
+      },
+    },
+    "bot",
+    nim,
+  );
+
+  assert.equal(payload.text, "[Audio] https://example.com/v.aac");
 });

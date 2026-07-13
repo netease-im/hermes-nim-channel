@@ -107,6 +107,7 @@ function normalizeAttachment(attach) {
     width: attach.w ?? null,
     height: attach.h ?? null,
     duration: attach.dur ?? null,
+    scene_name: attach.sceneName ?? attach.scene_name ?? null,
   };
 }
 
@@ -127,7 +128,28 @@ function extractInboundText(messageType, text, attachment) {
   return prefix ? `${prefix} ${attachmentUrl}`.trim() : content;
 }
 
-export function toInboundMessage(message, botAccount) {
+async function maybeTranscribeAudio(nim, attachment) {
+  const voiceService = nim?.V2NIMMessageService;
+  if (!voiceService?.voiceToText || !attachment?.url || !Number.isFinite(Number(attachment.duration)) || Number(attachment.duration) <= 0) {
+    return null;
+  }
+
+  try {
+    const transcribedText = await voiceService.voiceToText({
+      voiceUrl: attachment.url,
+      duration: Number(attachment.duration),
+      sceneName: attachment.scene_name ?? undefined,
+      mimeType: "aac",
+      sampleRate: "16000",
+    });
+    const normalized = String(transcribedText ?? "").trim();
+    return normalized || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function toInboundMessage(message, botAccount, nim = null) {
   const parsed = parseConversationId(message?.conversationId);
   const pushIds = message?.pushConfig?.forcePushAccountIds ?? [];
   const mentioned = pushIds.includes(botAccount);
@@ -140,6 +162,14 @@ export function toInboundMessage(message, botAccount) {
   };
   const messageType = typeMap[message?.messageType] ?? "unknown";
   const attachment = normalizeAttachment(message?.attachment ?? message?.attach);
+  let text = extractInboundText(messageType, message?.text, attachment);
+
+  if (messageType === "audio") {
+    const transcribedText = await maybeTranscribeAudio(nim, attachment);
+    if (transcribedText) {
+      text = transcribedText;
+    }
+  }
 
   return {
     message_id: String(message?.messageServerId ?? message?.messageClientId ?? ""),
@@ -149,7 +179,7 @@ export function toInboundMessage(message, botAccount) {
     sender_name: message?.senderName ?? null,
     target_id: String(message?.receiverId ?? parsed.targetId ?? ""),
     conversation_name: null,
-    text: extractInboundText(messageType, message?.text, attachment),
+    text,
     message_type: messageType,
     attachment,
     force_push_account_ids: pushIds,

@@ -17,6 +17,7 @@ class NimInboundAttachment:
     width: int | None = None
     height: int | None = None
     duration: int | None = None
+    scene_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -66,6 +67,7 @@ def parse_inbound_attachment(payload: dict[str, Any]) -> NimInboundAttachment | 
         width=int(attachment["width"]) if attachment.get("width") not in (None, "") else None,
         height=int(attachment["height"]) if attachment.get("height") not in (None, "") else None,
         duration=int(attachment["duration"]) if attachment.get("duration") not in (None, "") else None,
+        scene_name=str(attachment.get("scene_name") or attachment.get("sceneName") or "").strip() or None,
     )
 
 

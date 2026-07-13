@@ -4,6 +4,7 @@ import asyncio
 import unittest
 
 from hermes_nim_channel.config import PlatformConfig
+from hermes_nim_channel.inbound_media import parse_inbound_attachment
 from hermes_nim_channel.platforms.nim import NimAdapter
 
 
@@ -254,6 +255,19 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(accepted))
         self.assertEqual(["/tmp/cached-a.png"], accepted[0].media_urls)
         self.assertEqual(["image/png"], accepted[0].media_types)
+
+    def test_inbound_attachment_preserves_scene_name(self) -> None:
+        attachment = parse_inbound_attachment(
+            {
+                "attachment": {
+                    "url": "https://example.com/v.aac",
+                    "name": "voice.aac",
+                    "sceneName": "voice.scene",
+                }
+            }
+        )
+        self.assertIsNotNone(attachment)
+        self.assertEqual("voice.scene", attachment.scene_name)
 
 
 if __name__ == "__main__":
