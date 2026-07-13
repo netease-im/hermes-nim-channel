@@ -64,8 +64,12 @@ Additional controls:
 - `NIM_ALLOW_ALL_USERS`: allow all DMs when `true`
 - `NIM_GROUP_POLICY`: `open`, `allowlist`, or `disabled`
 - `NIM_GROUP_ALLOWLIST`: comma-separated team IDs
+- `NIM_QCHAT_POLICY`: `open`, `allowlist`, or `disabled`
+- `NIM_QCHAT_ALLOW_FROM`: comma-separated QChat allowlist entries in `server|channel|account` form
 - `NIM_HOME_CHANNEL`: default NIM target for proactive sends
 - `NIM_BRIDGE_COMMAND`: override bridge command; default points to the bundled `bridge/index.mjs`
+
+QChat targets use the explicit `qchat:<serverId>:<channelId>` prefix.
 
 ## Local Verification
 

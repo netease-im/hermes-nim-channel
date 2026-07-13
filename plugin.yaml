@@ -40,6 +40,14 @@ optional_env:
     description: "Comma-separated allowed team IDs"
     prompt: "Allowed team IDs"
     password: false
+  - name: NIM_QCHAT_POLICY
+    description: "QChat policy: open, allowlist, or disabled"
+    prompt: "QChat policy"
+    password: false
+  - name: NIM_QCHAT_ALLOW_FROM
+    description: "Comma-separated QChat allowlist entries"
+    prompt: "QChat allowlist"
+    password: false
   - name: NIM_HOME_CHANNEL
     description: "Default NIM target for proactive delivery"
     prompt: "Home channel"
