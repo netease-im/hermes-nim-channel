@@ -11,6 +11,7 @@ import {
   normalizeConnectionStatus,
   parseBridgeConfig,
   ReplyMessageCache,
+  sendTextReplyMessage,
   splitMessageIntoChunks,
   toInboundMessage,
 } from "./src/config.mjs";
@@ -620,16 +621,20 @@ async function handleSendMessage(id, params) {
     if (!originalMessage) {
       throw new Error(`reply target not found: ${replyTo}`);
     }
-    if (typeof runtime.messageService.replyMessage !== "function") {
-      throw new Error("reply_message is unavailable");
-    }
     const results = [];
     for (const chunk of chunks) {
       const message = runtime.messageCreator.createTextMessage(chunk);
       if (!message) {
         throw new Error("failed to create text message");
       }
-      results.push(sendResultFromSdkResult(await runtime.messageService.replyMessage(message, originalMessage, textSendOptions())));
+      const sendResult = await sendTextReplyMessage({
+        nim: runtime.nim,
+        messageService: runtime.messageService,
+        message,
+        originalMessage,
+        options: textSendOptions(),
+      });
+      results.push(sendResultFromSdkResult(sendResult));
     }
     emit(okResponse(id, responseFromChunkResults(results)));
     return;

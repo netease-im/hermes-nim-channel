@@ -10,7 +10,9 @@ import {
   normalizeTopicRefer,
   parseBridgeConfig,
   ReplyMessageCache,
+  resolveTopicReplyContext,
   resolveTeamName,
+  sendTextReplyMessage,
   splitMessageIntoChunks,
   toInboundMessage,
 } from "../src/config.mjs";
@@ -350,6 +352,135 @@ test("topic refer normalization rejects incomplete values", () => {
   assert.equal(normalizeTopicRefer({ topicId: 0, conversationId: "0|1|a", createTime: 1 }), null);
   assert.equal(normalizeTopicRefer({ topicId: 1, conversationId: "", createTime: 1 }), null);
   assert.equal(normalizeTopicRefer({ topicId: 1, conversationId: "0|1|a", createTime: 0 }), null);
+});
+
+test("topic reply context requires topic service and valid topic refer", () => {
+  const replyTopicMessage = async () => ({ message: { messageServerId: "server-topic" } });
+  const nim = {
+    V2NIMTopicService: {
+      replyTopicMessage,
+    },
+  };
+  const originalMessage = {
+    topicRefer: {
+      topicId: "7",
+      conversationId: "0|1|alice",
+      createTime: "12345",
+    },
+  };
+  const context = resolveTopicReplyContext(nim, originalMessage);
+  assert.deepEqual(context?.topic, {
+    topicId: 7,
+    conversationId: "0|1|alice",
+    createTime: 12345,
+  });
+  assert.equal(context?.topicService.replyTopicMessage, replyTopicMessage);
+});
+
+test("topic reply context falls back when sdk service or topic refer is unavailable", () => {
+  assert.equal(
+    resolveTopicReplyContext(
+      {
+        V2NIMTopicService: {
+          async replyTopicMessage() {},
+        },
+      },
+      {
+        topicRefer: {
+          topicId: 0,
+          conversationId: "0|1|alice",
+          createTime: 1,
+        },
+      },
+    ),
+    null,
+  );
+  assert.equal(
+    resolveTopicReplyContext(
+      {},
+      {
+        topicRefer: {
+          topicId: 1,
+          conversationId: "0|1|alice",
+          createTime: 1,
+        },
+      },
+    ),
+    null,
+  );
+});
+
+test("text reply sender uses topic service with receiver binding when available", async () => {
+  const calls = [];
+  const topicService = {
+    async replyTopicMessage(message, originalMessage, topic, options) {
+      assert.equal(this, topicService);
+      calls.push({ message, originalMessage, topic, options });
+      return { message: { messageServerId: "server-topic" } };
+    },
+  };
+  const message = { messageClientId: "client-reply" };
+  const originalMessage = {
+    topicRefer: {
+      topicId: 9,
+      conversationId: "0|1|alice",
+      createTime: 12345,
+    },
+  };
+  const result = await sendTextReplyMessage({
+    nim: { V2NIMTopicService: topicService },
+    messageService: {
+      async replyMessage() {
+        throw new Error("fallback should not be called");
+      },
+    },
+    message,
+    originalMessage,
+    options: { antispamConfig: { antispamEnabled: true } },
+  });
+
+  assert.equal(result.message.messageServerId, "server-topic");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].message, message);
+  assert.equal(calls[0].originalMessage, originalMessage);
+  assert.deepEqual(calls[0].topic, {
+    topicId: 9,
+    conversationId: "0|1|alice",
+    createTime: 12345,
+  });
+});
+
+test("text reply sender falls back to replyMessage when topic service is unavailable", async () => {
+  const calls = [];
+  const message = { messageClientId: "client-reply" };
+  const originalMessage = {
+    topicRefer: {
+      topicId: 9,
+      conversationId: "0|1|alice",
+      createTime: 12345,
+    },
+  };
+  const result = await sendTextReplyMessage({
+    nim: {},
+    messageService: {
+      async replyMessage(replyMessage, replyOriginalMessage, options) {
+        calls.push({ replyMessage, replyOriginalMessage, options });
+        return { message: { messageServerId: "server-fallback" } };
+      },
+    },
+    message,
+    originalMessage,
+    options: { antispamConfig: { antispamEnabled: false } },
+  });
+
+  assert.equal(result.message.messageServerId, "server-fallback");
+  assert.deepEqual(calls, [
+    {
+      replyMessage: message,
+      replyOriginalMessage: originalMessage,
+      options: { antispamConfig: { antispamEnabled: false } },
+    },
+  ]);
 });
 
 test("team name resolver falls back to team id", async () => {

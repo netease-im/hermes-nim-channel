@@ -368,6 +368,34 @@ export function normalizeTopicRefer(topicRefer) {
   };
 }
 
+export function resolveTopicReplyContext(nim, originalMessage) {
+  const topic = normalizeTopicRefer(originalMessage?.topicRefer);
+  const topicService = nim?.V2NIMTopicService;
+  if (!topic || typeof topicService?.replyTopicMessage !== "function") {
+    return null;
+  }
+  return {
+    topic,
+    topicService,
+  };
+}
+
+export async function sendTextReplyMessage({ nim, messageService, message, originalMessage, options }) {
+  const topicReplyContext = resolveTopicReplyContext(nim, originalMessage);
+  if (topicReplyContext) {
+    return topicReplyContext.topicService.replyTopicMessage(
+      message,
+      originalMessage,
+      topicReplyContext.topic,
+      options,
+    );
+  }
+  if (typeof messageService?.replyMessage !== "function") {
+    throw new Error("reply_message is unavailable");
+  }
+  return messageService.replyMessage(message, originalMessage, options);
+}
+
 export function normalizeConnectionStatus(kind, value = null) {
   if (kind === "login") {
     const code = typeof value === "object" && value !== null
