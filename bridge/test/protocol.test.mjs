@@ -6,6 +6,7 @@ import {
   isP2pApplicantAllowed,
   collectReadReceiptBatches,
   normalizeTarget,
+  normalizeTopicRefer,
   parseBridgeConfig,
   ReplyMessageCache,
   resolveTeamName,
@@ -292,6 +293,43 @@ test("inbound team conversion resolves conversation name", async () => {
   );
   assert.equal(payload.conversation_name, "Engineering");
   assert.deepEqual(calls, [["team-2", 1]]);
+});
+
+test("inbound conversion preserves thread and topic metadata", async () => {
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|1|alice",
+      senderId: "alice",
+      receiverId: "bot",
+      messageType: 0,
+      messageClientId: "client-topic",
+      text: "topic hello",
+      topicRefer: {
+        topicId: "42",
+        conversationId: "0|1|alice",
+        createTime: "123456",
+      },
+      threadReply: {
+        messageClientId: "root-client",
+      },
+    },
+    "bot",
+  );
+  assert.deepEqual(payload.topic_refer, {
+    topicId: 42,
+    conversationId: "0|1|alice",
+    createTime: 123456,
+  });
+  assert.deepEqual(payload.thread_reply, {
+    messageClientId: "root-client",
+  });
+});
+
+test("topic refer normalization rejects incomplete values", () => {
+  assert.equal(normalizeTopicRefer(null), null);
+  assert.equal(normalizeTopicRefer({ topicId: 0, conversationId: "0|1|a", createTime: 1 }), null);
+  assert.equal(normalizeTopicRefer({ topicId: 1, conversationId: "", createTime: 1 }), null);
+  assert.equal(normalizeTopicRefer({ topicId: 1, conversationId: "0|1|a", createTime: 0 }), null);
 });
 
 test("team name resolver falls back to team id", async () => {

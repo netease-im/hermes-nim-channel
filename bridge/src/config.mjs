@@ -351,6 +351,23 @@ function normalizeAttachment(attach) {
   };
 }
 
+export function normalizeTopicRefer(topicRefer) {
+  if (!topicRefer || typeof topicRefer !== "object") {
+    return null;
+  }
+  const topicId = Number(topicRefer.topicId);
+  const conversationId = String(topicRefer.conversationId ?? "").trim();
+  const createTime = Number(topicRefer.createTime);
+  if (!Number.isFinite(topicId) || topicId <= 0 || !conversationId || !Number.isFinite(createTime) || createTime <= 0) {
+    return null;
+  }
+  return {
+    topicId,
+    conversationId,
+    createTime,
+  };
+}
+
 function extractInboundText(messageType, text, attachment) {
   const content = String(text ?? "");
   if (content.trim()) {
@@ -430,6 +447,8 @@ export async function toInboundMessage(message, botAccount, nim = null) {
     force_push_account_ids: pushIds,
     mentioned,
     mention_all: false,
+    topic_refer: normalizeTopicRefer(message?.topicRefer),
+    thread_reply: message?.threadReply ?? null,
     from_self: String(message?.senderId ?? "") === String(botAccount ?? ""),
     raw: message,
   };
