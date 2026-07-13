@@ -12,6 +12,7 @@ import {
   ReplyMessageCache,
   resolveTopicReplyContext,
   resolveTeamName,
+  sendMediaMaybeTopicReply,
   sendTextReplyMessage,
   splitMessageIntoChunks,
   toInboundMessage,
@@ -481,6 +482,76 @@ test("text reply sender falls back to replyMessage when topic service is unavail
       options: { antispamConfig: { antispamEnabled: false } },
     },
   ]);
+});
+
+test("media sender uses topic service with receiver binding when available", async () => {
+  const calls = [];
+  const topicService = {
+    async replyTopicMessage(message, originalMessage, topic, options) {
+      assert.equal(this, topicService);
+      calls.push({ message, originalMessage, topic, options });
+      return { message: { messageServerId: "server-media-topic" } };
+    },
+  };
+  const message = { messageClientId: "client-media" };
+  const originalMessage = {
+    topicRefer: {
+      topicId: 10,
+      conversationId: "0|1|alice",
+      createTime: 12345,
+    },
+  };
+
+  const sent = await sendMediaMaybeTopicReply({
+    nim: { V2NIMTopicService: topicService },
+    message,
+    originalMessage,
+    options: { antispamConfig: { antispamEnabled: true } },
+    async sendOrdinary() {
+      throw new Error("ordinary media send should not be called");
+    },
+  });
+
+  assert.equal(sent.usedTopicReply, true);
+  assert.equal(sent.result.message.messageServerId, "server-media-topic");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].message, message);
+  assert.equal(calls[0].originalMessage, originalMessage);
+  assert.deepEqual(calls[0].topic, {
+    topicId: 10,
+    conversationId: "0|1|alice",
+    createTime: 12345,
+  });
+});
+
+test("media sender falls back to ordinary send when topic context is unavailable", async () => {
+  let ordinaryCalls = 0;
+  const sent = await sendMediaMaybeTopicReply({
+    nim: {},
+    message: { messageClientId: "client-media" },
+    originalMessage: {
+      topicRefer: {
+        topicId: 10,
+        conversationId: "0|1|alice",
+        createTime: 12345,
+      },
+    },
+    options: {},
+    async sendOrdinary() {
+      ordinaryCalls += 1;
+      return {
+        message_id: "server-ordinary",
+        client_message_id: "client-media",
+      };
+    },
+  });
+
+  assert.equal(sent.usedTopicReply, false);
+  assert.deepEqual(sent.result, {
+    message_id: "server-ordinary",
+    client_message_id: "client-media",
+  });
+  assert.equal(ordinaryCalls, 1);
 });
 
 test("team name resolver falls back to team id", async () => {

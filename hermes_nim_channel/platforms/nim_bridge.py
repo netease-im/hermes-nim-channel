@@ -128,6 +128,7 @@ class NodeBridgeProcess:
         file_path: str,
         media_kind: str,
         session_type: str,
+        reply_to: str | None = None,
     ) -> dict[str, Any]:
         response = await self.request(
             "send_media",
@@ -136,6 +137,7 @@ class NodeBridgeProcess:
                 "file_path": file_path,
                 "media_kind": media_kind,
                 "session_type": session_type,
+                "reply_to": reply_to,
             },
         )
         if response.get("status") != "ok":

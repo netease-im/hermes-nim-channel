@@ -373,6 +373,7 @@ class HermesNimAdapter(BasePlatformAdapter):
             file_path=str(Path(file_path)),
             media_kind=media_kind,
             session_type=session_type,
+            reply_to=reply_to or (metadata or {}).get("reply_to"),
         )
         media_result = SendResult(
             success=True,

@@ -396,6 +396,25 @@ export async function sendTextReplyMessage({ nim, messageService, message, origi
   return messageService.replyMessage(message, originalMessage, options);
 }
 
+export async function sendMediaMaybeTopicReply({ nim, message, originalMessage, options, sendOrdinary }) {
+  const topicReplyContext = resolveTopicReplyContext(nim, originalMessage);
+  if (topicReplyContext) {
+    return {
+      usedTopicReply: true,
+      result: await topicReplyContext.topicService.replyTopicMessage(
+        message,
+        originalMessage,
+        topicReplyContext.topic,
+        options,
+      ),
+    };
+  }
+  return {
+    usedTopicReply: false,
+    result: await sendOrdinary(),
+  };
+}
+
 export function normalizeConnectionStatus(kind, value = null) {
   if (kind === "login") {
     const code = typeof value === "object" && value !== null

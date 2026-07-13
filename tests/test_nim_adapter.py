@@ -61,6 +61,7 @@ class FakeBridge:
         file_path: str,
         media_kind: str,
         session_type: str,
+        reply_to=None,
     ) -> dict[str, str]:
         self.media_sent.append(
             {
@@ -68,6 +69,7 @@ class FakeBridge:
                 "file_path": file_path,
                 "media_kind": media_kind,
                 "session_type": session_type,
+                "reply_to": reply_to,
             }
         )
         return {"message_id": "media-1"}
@@ -359,6 +361,32 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("image", bridge.media_sent[0]["media_kind"])
         self.assertEqual("team", bridge.media_sent[0]["session_type"])
         self.assertEqual("/tmp/test.png", bridge.media_sent[0]["file_path"])
+
+    async def test_send_media_forwards_reply_to(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send_image_file("user:alice", "/tmp/test.png", reply_to="server-1")
+        self.assertTrue(result.success)
+        self.assertEqual("server-1", bridge.media_sent[0]["reply_to"])
+
+    async def test_send_media_forwards_metadata_reply_to(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send_document(
+            "user:alice",
+            "/tmp/report.pdf",
+            metadata={"reply_to": "client-1"},
+        )
+        self.assertTrue(result.success)
+        self.assertEqual("client-1", bridge.media_sent[0]["reply_to"])
 
     async def test_qchat_media_is_rejected_without_bridge_send(self) -> None:
         bridge = FakeBridge()

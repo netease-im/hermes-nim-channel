@@ -11,6 +11,7 @@ import {
   normalizeConnectionStatus,
   parseBridgeConfig,
   ReplyMessageCache,
+  sendMediaMaybeTopicReply,
   sendTextReplyMessage,
   splitMessageIntoChunks,
   toInboundMessage,
@@ -718,7 +719,18 @@ async function handleSendMedia(id, params) {
     throw new Error(`failed to create ${mediaKind} message`);
   }
 
-  const result = await sendCreatedMessage(message, conversationId);
+  const replyTo = String(params?.reply_to ?? "").trim();
+  const originalMessage = replyTo ? runtime.replyCache.get(replyTo) : null;
+  const mediaSend = await sendMediaMaybeTopicReply({
+    nim: runtime.nim,
+    message,
+    originalMessage,
+    options: textSendOptions(),
+    sendOrdinary: () => sendCreatedMessage(message, conversationId),
+  });
+  const result = mediaSend.usedTopicReply
+    ? sendResultFromSdkResult(mediaSend.result)
+    : mediaSend.result;
   emit(okResponse(id, result));
 }
 
