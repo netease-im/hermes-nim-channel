@@ -40,6 +40,13 @@ class NimResolvedConfig:
     bridge_command: list[str] = field(default_factory=lambda: ["node", "bridge/index.mjs"])
     media_max_mb: int = 30
     debug: bool = False
+    weblbs_url: str | None = None
+    link_web: str | None = None
+    nos_uploader: str | None = None
+    nos_downloader_v2: str | None = None
+    nos_ssl: bool | None = None
+    nos_accelerate: str | None = None
+    nos_accelerate_host: str | None = None
     raw_extra: dict[str, Any] = field(default_factory=dict)
 
     def configured(self) -> bool:
@@ -57,6 +64,15 @@ class NimResolvedConfig:
             "debug": self.debug,
             "media_max_mb": self.media_max_mb,
             "home_channel": self.home_channel,
+            "advanced": {
+                "weblbsUrl": self.weblbs_url,
+                "link_web": self.link_web,
+                "nos_uploader": self.nos_uploader,
+                "nos_downloader_v2": self.nos_downloader_v2,
+                "nosSsl": self.nos_ssl,
+                "nos_accelerate": self.nos_accelerate,
+                "nos_accelerate_host": self.nos_accelerate_host,
+            },
             "qchat": {
                 "policy": self.qchat_policy,
                 "allowFrom": self.qchat_allow_from,
@@ -86,6 +102,19 @@ def _pick(extra: dict[str, Any], env: dict[str, str], key: str, env_key: str) ->
     if key in extra and extra[key] not in (None, ""):
         return extra[key]
     return env.get(env_key)
+
+
+def _pick_any(extra: dict[str, Any], env: dict[str, str], *keys: tuple[str, str]) -> Any:
+    for key, env_key in keys:
+        picked = _pick(extra, env, key, env_key)
+        if picked not in (None, ""):
+            return picked
+    return None
+
+
+def _as_optional_str(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
 
 
 def parse_nim_token(value: Any) -> NimCredentials | None:
@@ -143,6 +172,7 @@ def load_nim_config(
     qchat_allow_from = _as_list(_pick(extra, env, "qchat_allow_from", "NIM_QCHAT_ALLOW_FROM"))
     if not qchat_allow_from:
         qchat_allow_from = _as_list(_pick(extra, env, "qchat_allowlist", "NIM_QCHAT_ALLOWLIST"))
+    nos_ssl_value = _pick_any(extra, env, ("nos_ssl", "NIM_NOS_SSL"), ("nosSsl", "NIM_NOS_SSL"))
 
     return NimResolvedConfig(
         enabled=platform.enabled,
@@ -160,5 +190,12 @@ def load_nim_config(
         bridge_command=_resolve_bridge_command(_pick(extra, env, "bridge_command", "NIM_BRIDGE_COMMAND")),
         media_max_mb=int(_pick(extra, env, "media_max_mb", "NIM_MEDIA_MAX_MB") or 30),
         debug=_as_bool(_pick(extra, env, "debug", "NIM_DEBUG"), default=False),
+        weblbs_url=_as_optional_str(_pick_any(extra, env, ("weblbs_url", "NIM_WEBLBS_URL"), ("weblbsUrl", "NIM_WEBLBS_URL"))),
+        link_web=_as_optional_str(_pick(extra, env, "link_web", "NIM_LINK_WEB")),
+        nos_uploader=_as_optional_str(_pick(extra, env, "nos_uploader", "NIM_NOS_UPLOADER")),
+        nos_downloader_v2=_as_optional_str(_pick(extra, env, "nos_downloader_v2", "NIM_NOS_DOWNLOADER_V2")),
+        nos_ssl=_as_bool(nos_ssl_value) if nos_ssl_value not in (None, "") else None,
+        nos_accelerate=_as_optional_str(_pick(extra, env, "nos_accelerate", "NIM_NOS_ACCELERATE")),
+        nos_accelerate_host=_as_optional_str(_pick(extra, env, "nos_accelerate_host", "NIM_NOS_ACCELERATE_HOST")),
         raw_extra=extra,
     )

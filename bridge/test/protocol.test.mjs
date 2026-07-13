@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildNimConstructorOptions,
   normalizeTarget,
   parseBridgeConfig,
   toInboundMessage,
@@ -31,6 +32,55 @@ test("config parser accepts shorthand credentials", () => {
   });
   assert.equal(parsed.credentials.appKey, "app");
   assert.equal(parsed.credentials.account, "bot");
+});
+
+test("private deployment config builds SDK constructor options", () => {
+  const parsed = parseBridgeConfig({
+    nim_token: "app|bot|secret",
+    advanced: {
+      weblbsUrl: "https://lbs.example.com",
+      link_web: "wss://link.example.com",
+      nos_uploader: "https://upload.example.com",
+      nos_downloader_v2: "https://download.example.com/{object}",
+      nosSsl: true,
+      nos_accelerate: "https://cdn.example.com/{object}",
+      nos_accelerate_host: "cdn.example.com",
+    },
+  });
+  const options = buildNimConstructorOptions(parsed);
+  assert.deepEqual(options.privateConf, {
+    weblbsUrl: "https://lbs.example.com",
+    link_web: "wss://link.example.com",
+    nos_uploader: "https://upload.example.com",
+    nos_downloader_v2: "https://download.example.com/{object}",
+    nosSsl: true,
+    nos_accelerate: "https://cdn.example.com/{object}",
+    nos_accelerate_host: "cdn.example.com",
+  });
+  assert.deepEqual(options.V2NIMLoginServiceConfig, {
+    lbsUrls: ["https://lbs.example.com"],
+    linkUrl: "wss://link.example.com",
+  });
+});
+
+test("private deployment config ignores blank endpoints and parses boolean strings", () => {
+  const parsed = parseBridgeConfig({
+    nim_token: "app|bot|secret",
+    advanced: {
+      weblbsUrl: "   ",
+      link_web: "wss://link.example.com  ",
+      nosSsl: "false",
+      nos_accelerate_host: "   ",
+    },
+  });
+  const options = buildNimConstructorOptions(parsed);
+  assert.deepEqual(options.privateConf, {
+    link_web: "wss://link.example.com",
+    nosSsl: false,
+  });
+  assert.deepEqual(options.V2NIMLoginServiceConfig, {
+    linkUrl: "wss://link.example.com",
+  });
 });
 
 test("target normalization preserves team routing", () => {

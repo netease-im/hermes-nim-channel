@@ -27,11 +27,22 @@ export function parseBridgeConfig(raw) {
     throw new Error("bridge credentials are incomplete");
   }
 
+  const advanced = raw?.advanced ?? {};
+
   return {
     credentials: resolved,
     debug: Boolean(raw?.debug),
     mediaMaxMb: Number(raw?.media_max_mb ?? raw?.mediaMaxMb ?? 30),
     homeChannel: raw?.home_channel ?? raw?.homeChannel ?? null,
+    advanced: {
+      weblbsUrl: advanced.weblbsUrl ?? raw?.weblbsUrl ?? raw?.weblbs_url ?? null,
+      link_web: advanced.link_web ?? raw?.link_web ?? null,
+      nos_uploader: advanced.nos_uploader ?? raw?.nos_uploader ?? null,
+      nos_downloader_v2: advanced.nos_downloader_v2 ?? raw?.nos_downloader_v2 ?? null,
+      nosSsl: advanced.nosSsl ?? raw?.nosSsl ?? raw?.nos_ssl ?? null,
+      nos_accelerate: advanced.nos_accelerate ?? raw?.nos_accelerate ?? null,
+      nos_accelerate_host: advanced.nos_accelerate_host ?? raw?.nos_accelerate_host ?? null,
+    },
     qchat: {
       policy: String(raw?.qchat?.policy ?? raw?.qchat_policy ?? raw?.qchatPolicy ?? "open").trim() || "open",
       allowFrom: Array.isArray(raw?.qchat?.allowFrom)
@@ -43,6 +54,64 @@ export function parseBridgeConfig(raw) {
             : [],
     },
   };
+}
+
+function setStringOption(target, key, value) {
+  const normalized = String(value ?? "").trim();
+  if (normalized) {
+    target[key] = normalized;
+  }
+}
+
+function normalizedString(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function optionalBoolean(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
+export function buildNimConstructorOptions(config) {
+  const advanced = config?.advanced ?? {};
+  const weblbsUrl = normalizedString(advanced.weblbsUrl);
+  const linkWeb = normalizedString(advanced.link_web);
+  const nosSsl = optionalBoolean(advanced.nosSsl);
+  const privateConf = {};
+
+  setStringOption(privateConf, "weblbsUrl", weblbsUrl);
+  setStringOption(privateConf, "link_web", linkWeb);
+  setStringOption(privateConf, "nos_uploader", advanced.nos_uploader);
+  setStringOption(privateConf, "nos_downloader_v2", advanced.nos_downloader_v2);
+  if (nosSsl !== null) {
+    privateConf.nosSsl = nosSsl;
+  }
+  setStringOption(privateConf, "nos_accelerate", advanced.nos_accelerate);
+  setStringOption(privateConf, "nos_accelerate_host", advanced.nos_accelerate_host);
+
+  const options = {};
+  if (Object.keys(privateConf).length > 0) {
+    options.privateConf = privateConf;
+  }
+
+  if (weblbsUrl || linkWeb) {
+    const loginServiceConfig = {};
+    if (weblbsUrl) {
+      loginServiceConfig.lbsUrls = [weblbsUrl];
+    }
+    if (linkWeb) {
+      loginServiceConfig.linkUrl = linkWeb;
+    }
+    options.V2NIMLoginServiceConfig = loginServiceConfig;
+  }
+
+  return options;
 }
 
 export function normalizeTarget(chatId, fallbackSessionType = "p2p") {

@@ -48,6 +48,34 @@ optional_env:
     description: "Comma-separated QChat allowlist entries"
     prompt: "QChat allowlist"
     password: false
+  - name: NIM_WEBLBS_URL
+    description: "Private deployment LBS URL"
+    prompt: "Private LBS URL"
+    password: false
+  - name: NIM_LINK_WEB
+    description: "Private deployment link URL"
+    prompt: "Private link URL"
+    password: false
+  - name: NIM_NOS_UPLOADER
+    description: "Private deployment NOS upload URL"
+    prompt: "NOS upload URL"
+    password: false
+  - name: NIM_NOS_DOWNLOADER_V2
+    description: "Private deployment NOS download URL format"
+    prompt: "NOS download URL"
+    password: false
+  - name: NIM_NOS_SSL
+    description: "Whether private NOS download uses HTTPS"
+    prompt: "NOS SSL"
+    password: false
+  - name: NIM_NOS_ACCELERATE
+    description: "Private deployment NOS accelerate URL format"
+    prompt: "NOS accelerate URL"
+    password: false
+  - name: NIM_NOS_ACCELERATE_HOST
+    description: "Private deployment NOS accelerate host"
+    prompt: "NOS accelerate host"
+    password: false
   - name: NIM_HOME_CHANNEL
     description: "Default NIM target for proactive delivery"
     prompt: "Home channel"

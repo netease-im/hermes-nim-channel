@@ -75,6 +75,32 @@ class NimConfigTests(unittest.TestCase):
         assert resolved.credentials is not None
         self.assertEqual(["server-x|channel-y"], resolved.qchat_allow_from)
 
+    def test_private_deployment_endpoints_are_added_to_bridge_payload(self) -> None:
+        resolved = load_nim_config(
+            PlatformConfig(),
+            {
+                "NIM_APP_KEY": "app",
+                "NIM_ACCOUNT": "bot",
+                "NIM_TOKEN": "secret",
+                "NIM_WEBLBS_URL": "https://lbs.example.com",
+                "NIM_LINK_WEB": "wss://link.example.com",
+                "NIM_NOS_UPLOADER": "https://upload.example.com",
+                "NIM_NOS_DOWNLOADER_V2": "https://download.example.com/{bucket}/{object}",
+                "NIM_NOS_SSL": "true",
+                "NIM_NOS_ACCELERATE": "https://cdn.example.com/{object}",
+                "NIM_NOS_ACCELERATE_HOST": "cdn.example.com",
+            },
+        )
+        payload = resolved.to_bridge_payload()
+        advanced = payload["advanced"]
+        self.assertEqual("https://lbs.example.com", advanced["weblbsUrl"])
+        self.assertEqual("wss://link.example.com", advanced["link_web"])
+        self.assertEqual("https://upload.example.com", advanced["nos_uploader"])
+        self.assertEqual("https://download.example.com/{bucket}/{object}", advanced["nos_downloader_v2"])
+        self.assertTrue(advanced["nosSsl"])
+        self.assertEqual("https://cdn.example.com/{object}", advanced["nos_accelerate"])
+        self.assertEqual("cdn.example.com", advanced["nos_accelerate_host"])
+
     def test_bridge_command_prefers_installed_binary(self) -> None:
         with mock.patch("hermes_nim_channel.config.shutil.which", return_value="/usr/local/bin/hermes-nim-bridge"):
             self.assertEqual(["/usr/local/bin/hermes-nim-bridge"], _resolve_bridge_command(None))

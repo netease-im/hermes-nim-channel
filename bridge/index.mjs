@@ -3,6 +3,7 @@ import process from "node:process";
 import readline from "node:readline";
 
 import {
+  buildNimConstructorOptions,
   buildConversationId,
   normalizeTarget,
   parseBridgeConfig,
@@ -265,13 +266,14 @@ async function handleConnect(id, params) {
   const config = parseBridgeConfig(params?.config ?? {});
   const mod = await import("@yxim/nim-bot");
   const NIM = mod.default ?? mod;
+  const constructorOptions = buildNimConstructorOptions(config);
   const nim = new NIM(
     {
       appkey: config.credentials.appKey,
       apiVersion: "v2",
       debugLevel: config.debug ? "debug" : "off",
     },
-    undefined,
+    Object.keys(constructorOptions).length > 0 ? constructorOptions : undefined,
   );
 
   const loginService = nim.V2NIMLoginService;

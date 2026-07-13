@@ -66,6 +66,13 @@ Additional controls:
 - `NIM_GROUP_ALLOWLIST`: comma-separated team IDs
 - `NIM_QCHAT_POLICY`: `open`, `allowlist`, or `disabled`
 - `NIM_QCHAT_ALLOW_FROM`: comma-separated QChat allowlist entries in `server|channel|account` form
+- `NIM_WEBLBS_URL`: private deployment LBS URL
+- `NIM_LINK_WEB`: private deployment link URL
+- `NIM_NOS_UPLOADER`: private NOS upload URL
+- `NIM_NOS_DOWNLOADER_V2`: private NOS download URL format
+- `NIM_NOS_SSL`: whether private NOS download uses HTTPS
+- `NIM_NOS_ACCELERATE`: private NOS accelerate URL format
+- `NIM_NOS_ACCELERATE_HOST`: private NOS accelerate host
 - `NIM_HOME_CHANNEL`: default NIM target for proactive sends
 - `NIM_BRIDGE_COMMAND`: override bridge command; default points to the bundled `bridge/index.mjs`
 

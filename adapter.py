@@ -411,6 +411,18 @@ def _env_enablement() -> dict[str, Any] | None:
             "group_allowlist",
             lambda value: [item.strip() for item in value.split(",") if item.strip()],
         ),
+        "NIM_QCHAT_POLICY": ("qchat_policy", lambda value: value.strip()),
+        "NIM_QCHAT_ALLOW_FROM": (
+            "qchat_allow_from",
+            lambda value: [item.strip() for item in value.split(",") if item.strip()],
+        ),
+        "NIM_WEBLBS_URL": ("weblbs_url", lambda value: value.strip()),
+        "NIM_LINK_WEB": ("link_web", lambda value: value.strip()),
+        "NIM_NOS_UPLOADER": ("nos_uploader", lambda value: value.strip()),
+        "NIM_NOS_DOWNLOADER_V2": ("nos_downloader_v2", lambda value: value.strip()),
+        "NIM_NOS_SSL": ("nos_ssl", lambda value: value.strip().lower() in {"1", "true", "yes", "on"}),
+        "NIM_NOS_ACCELERATE": ("nos_accelerate", lambda value: value.strip()),
+        "NIM_NOS_ACCELERATE_HOST": ("nos_accelerate_host", lambda value: value.strip()),
         "NIM_BRIDGE_COMMAND": ("bridge_command", lambda value: value.strip()),
     }
     for env_name, (key, parser) in optional_map.items():
