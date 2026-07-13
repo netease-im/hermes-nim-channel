@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from hermes_nim_channel.config import NimResolvedConfig, Platform, PlatformConfig, load_nim_config
@@ -66,6 +67,79 @@ class NimAdapter(BasePlatformAdapter):
         return SendResult(
             success=True,
             message_id=str(result.get("message_id") or result.get("client_message_id") or ""),
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        return await self._send_media_with_optional_caption(
+            chat_id=chat_id,
+            file_path=image_path,
+            media_kind="image",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+        file_name: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        return await self._send_media_with_optional_caption(
+            chat_id=chat_id,
+            file_path=file_path,
+            media_kind="file",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        return await self._send_media_with_optional_caption(
+            chat_id=chat_id,
+            file_path=audio_path,
+            media_kind="audio",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        return await self._send_media_with_optional_caption(
+            chat_id=chat_id,
+            file_path=video_path,
+            media_kind="video",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
         )
 
     def get_chat_info(self, chat_id: str) -> ChatInfo:
@@ -160,6 +234,39 @@ class NimAdapter(BasePlatformAdapter):
             return MessageType(value)
         except ValueError:
             return MessageType.UNKNOWN
+
+    async def _send_media_with_optional_caption(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        media_kind: str,
+        caption: str | None,
+        reply_to: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> SendResult:
+        session_type = self._infer_session_type(chat_id, metadata)
+        result = await self._bridge.send_media(
+            chat_id=chat_id,
+            file_path=str(Path(file_path)),
+            media_kind=media_kind,
+            session_type=session_type,
+        )
+        media_result = SendResult(
+            success=True,
+            message_id=str(result.get("message_id") or result.get("client_message_id") or ""),
+        )
+        if not caption:
+            return media_result
+
+        caption_result = await self.send(
+            chat_id=chat_id,
+            text=caption,
+            metadata=metadata,
+        )
+        if caption_result.success and not caption_result.message_id:
+            caption_result.message_id = media_result.message_id
+        return caption_result
 
 
 PlatformAdapter = NimAdapter

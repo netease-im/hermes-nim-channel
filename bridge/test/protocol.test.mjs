@@ -8,6 +8,11 @@ import {
   toInboundMessage,
 } from "../src/config.mjs";
 import {
+  coerceAudioMetadata,
+  coerceVideoMetadata,
+  normalizeMediaKind,
+} from "../src/media.mjs";
+import {
   decodeJsonl,
   encodeJsonl,
   eventMessage,
@@ -38,6 +43,39 @@ test("target normalization preserves team routing", () => {
     id: "alice",
     sessionType: "p2p",
   });
+});
+
+test("media kind normalization accepts supported kinds", () => {
+  assert.equal(normalizeMediaKind("image"), "image");
+  assert.equal(normalizeMediaKind(" video "), "video");
+  assert.throws(() => normalizeMediaKind("sticker"));
+});
+
+test("audio metadata coercion requires a positive duration", () => {
+  assert.deepEqual(coerceAudioMetadata({ format: { duration: "3.2" } }), {
+    duration: 3,
+  });
+  assert.throws(() => coerceAudioMetadata({ format: { duration: "0" } }));
+});
+
+test("video metadata coercion requires duration and dimensions", () => {
+  assert.deepEqual(
+    coerceVideoMetadata({
+      format: { duration: "9.8" },
+      streams: [{ codec_type: "video", width: 1280, height: 720 }],
+    }),
+    {
+      duration: 10,
+      width: 1280,
+      height: 720,
+    },
+  );
+  assert.throws(() =>
+    coerceVideoMetadata({
+      format: { duration: "9.8" },
+      streams: [{ codec_type: "video", width: 0, height: 720 }],
+    }),
+  );
 });
 
 test("inbound conversion extracts mention metadata", () => {

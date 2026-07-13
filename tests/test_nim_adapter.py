@@ -12,6 +12,7 @@ class FakeBridge:
         self.started = False
         self.stopped = False
         self.sent: list[dict[str, str]] = []
+        self.media_sent: list[dict[str, str]] = []
         self.event_handler = None
 
     async def start(self, config, *, event_handler=None) -> None:
@@ -33,6 +34,24 @@ class FakeBridge:
             }
         )
         return {"message_id": "msg-1"}
+
+    async def send_media(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        media_kind: str,
+        session_type: str,
+    ) -> dict[str, str]:
+        self.media_sent.append(
+            {
+                "chat_id": chat_id,
+                "file_path": file_path,
+                "media_kind": media_kind,
+                "session_type": session_type,
+            }
+        )
+        return {"message_id": "media-1"}
 
 
 class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -164,6 +183,36 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         result = await adapter.send("team:123", "hello")
         self.assertTrue(result.success)
         self.assertEqual("team", bridge.sent[0]["session_type"])
+
+    async def test_send_image_file_uses_bridge_media_path(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send_image_file("team:123", "/tmp/test.png")
+        self.assertTrue(result.success)
+        self.assertEqual("image", bridge.media_sent[0]["media_kind"])
+        self.assertEqual("team", bridge.media_sent[0]["session_type"])
+        self.assertEqual("/tmp/test.png", bridge.media_sent[0]["file_path"])
+
+    async def test_media_caption_sends_followup_text(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send_document(
+            "user:alice",
+            "/tmp/report.pdf",
+            caption="see attachment",
+        )
+        self.assertTrue(result.success)
+        self.assertEqual("file", bridge.media_sent[0]["media_kind"])
+        self.assertEqual("see attachment", bridge.sent[0]["text"])
+        self.assertEqual("p2p", bridge.sent[0]["session_type"])
 
 
 if __name__ == "__main__":

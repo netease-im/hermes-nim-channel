@@ -8,6 +8,7 @@ import {
   parseBridgeConfig,
   toInboundMessage,
 } from "./src/config.mjs";
+import { createMediaMessage, normalizeMediaKind } from "./src/media.mjs";
 import {
   decodeJsonl,
   errorResponse,
@@ -127,21 +128,17 @@ async function handleHealth(id) {
   );
 }
 
-async function handleSendMessage(id, params) {
+async function sendCreatedMessage(message, conversationId) {
   if (!runtime) {
     throw new Error("bridge is not connected");
   }
-
-  const target = normalizeTarget(params?.chat_id, params?.session_type);
-  const conversationId = buildConversationId(
-    runtime.nim,
-    target.id,
-    target.sessionType,
-  );
-  const message = runtime.messageCreator.createTextMessage(String(params?.text ?? ""));
-
   if (!message) {
-    throw new Error("failed to create text message");
+    throw new Error("failed to create message");
+  }
+
+  const { messageService } = runtime;
+  if (!runtime) {
+    throw new Error("bridge is not connected");
   }
 
   const result = await new Promise((resolve, reject) => {
@@ -157,7 +154,7 @@ async function handleSendMessage(id, params) {
       }
 
       settled = true;
-      runtime.messageService.off?.("onSendMessage", listener);
+      messageService.off?.("onSendMessage", listener);
       const errorCode = sentMessage?.messageStatus?.errorCode;
       const failed =
         sentMessage?.sendingState === 2 ||
@@ -178,15 +175,15 @@ async function handleSendMessage(id, params) {
       });
     };
 
-    runtime.messageService.on("onSendMessage", listener);
-    runtime.messageService
+    messageService.on("onSendMessage", listener);
+    messageService
       .sendMessage(message, conversationId, {})
       .catch((error) => {
         if (settled) {
           return;
         }
         settled = true;
-        runtime.messageService.off?.("onSendMessage", listener);
+        messageService.off?.("onSendMessage", listener);
         reject(error);
       });
 
@@ -195,11 +192,65 @@ async function handleSendMessage(id, params) {
         return;
       }
       settled = true;
-      runtime.messageService.off?.("onSendMessage", listener);
+      messageService.off?.("onSendMessage", listener);
       reject(new Error("send_message timed out"));
     }, 30000);
   });
 
+  return result;
+}
+
+async function handleSendMessage(id, params) {
+  if (!runtime) {
+    throw new Error("bridge is not connected");
+  }
+
+  const target = normalizeTarget(params?.chat_id, params?.session_type);
+  const conversationId = buildConversationId(
+    runtime.nim,
+    target.id,
+    target.sessionType,
+  );
+  const message = runtime.messageCreator.createTextMessage(String(params?.text ?? ""));
+
+  if (!message) {
+    throw new Error("failed to create text message");
+  }
+
+  const result = await sendCreatedMessage(message, conversationId);
+
+  emit(okResponse(id, result));
+}
+
+async function handleSendMedia(id, params) {
+  if (!runtime) {
+    throw new Error("bridge is not connected");
+  }
+
+  const target = normalizeTarget(params?.chat_id, params?.session_type);
+  const conversationId = buildConversationId(
+    runtime.nim,
+    target.id,
+    target.sessionType,
+  );
+  const mediaKind = normalizeMediaKind(params?.media_kind);
+  const filePath = String(params?.file_path ?? "").trim();
+
+  if (!filePath) {
+    throw new Error("file_path is required");
+  }
+
+  const message = await createMediaMessage(
+    runtime.messageCreator,
+    mediaKind,
+    filePath,
+  );
+
+  if (!message) {
+    throw new Error(`failed to create ${mediaKind} message`);
+  }
+
+  const result = await sendCreatedMessage(message, conversationId);
   emit(okResponse(id, result));
 }
 
@@ -222,6 +273,10 @@ async function handleRequest(message) {
     }
     if (method === "send_message") {
       await handleSendMessage(id, message?.params);
+      return;
+    }
+    if (method === "send_media") {
+      await handleSendMedia(id, message?.params);
       return;
     }
     throw new Error(`unsupported method: ${method}`);

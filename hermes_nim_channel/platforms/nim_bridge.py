@@ -100,6 +100,27 @@ class NodeBridgeProcess:
             raise BridgeError(response.get("error", "send_message failed"))
         return dict(response.get("result") or {})
 
+    async def send_media(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        media_kind: str,
+        session_type: str,
+    ) -> dict[str, Any]:
+        response = await self.request(
+            "send_media",
+            {
+                "chat_id": chat_id,
+                "file_path": file_path,
+                "media_kind": media_kind,
+                "session_type": session_type,
+            },
+        )
+        if response.get("status") != "ok":
+            raise BridgeError(response.get("error", "send_media failed"))
+        return dict(response.get("result") or {})
+
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         process = self._process
         if process is None or process.stdin is None:
