@@ -224,6 +224,43 @@ export function collectReadReceiptBatches(messages = [], batchSize = 50) {
   };
 }
 
+export class ReplyMessageCache {
+  constructor(limit = 200) {
+    this.limit = Math.max(1, Number(limit) || 200);
+    this.entries = new Map();
+  }
+
+  add(message) {
+    const keys = [
+      message?.messageServerId,
+      message?.messageClientId,
+    ]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean);
+    if (keys.length === 0) {
+      return;
+    }
+    for (const key of keys) {
+      if (this.entries.has(key)) {
+        this.entries.delete(key);
+      }
+      this.entries.set(key, message);
+    }
+    while (this.entries.size > this.limit) {
+      const oldestKey = this.entries.keys().next().value;
+      this.entries.delete(oldestKey);
+    }
+  }
+
+  get(messageId) {
+    const key = String(messageId ?? "").trim();
+    if (!key) {
+      return null;
+    }
+    return this.entries.get(key) ?? null;
+  }
+}
+
 function normalizeAttachment(attach) {
   if (!attach || typeof attach !== "object") {
     return null;

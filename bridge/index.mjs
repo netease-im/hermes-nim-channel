@@ -9,6 +9,7 @@ import {
   isP2pApplicantAllowed,
   normalizeTarget,
   parseBridgeConfig,
+  ReplyMessageCache,
   toInboundMessage,
 } from "./src/config.mjs";
 import { createMediaMessage, normalizeMediaKind } from "./src/media.mjs";
@@ -341,6 +342,7 @@ async function handleConnect(id, params) {
   const loginService = nim.V2NIMLoginService;
   const messageService = nim.V2NIMMessageService;
   const messageCreator = nim.V2NIMMessageCreator;
+  const replyCache = new ReplyMessageCache();
 
   if (!loginService || !messageService || !messageCreator) {
     throw new Error("NIM SDK V2 services are unavailable");
@@ -350,6 +352,7 @@ async function handleConnect(id, params) {
     void (async () => {
       try {
         for (const message of messages) {
+          replyCache.add(message);
           emit(
             eventMessage(
               "message",
@@ -375,6 +378,7 @@ async function handleConnect(id, params) {
     loginService,
     messageService,
     messageCreator,
+    replyCache,
     config,
   };
   friendRuntime = setupFriendRuntime(nim, config);
@@ -511,6 +515,14 @@ async function sendCreatedMessage(message, conversationId) {
   return result;
 }
 
+function sendResultFromSdkResult(result) {
+  const message = result?.message ?? result;
+  return {
+    message_id: String(message?.messageServerId ?? ""),
+    client_message_id: String(message?.messageClientId ?? ""),
+  };
+}
+
 async function handleSendMessage(id, params) {
   if (!runtime) {
     throw new Error("bridge is not connected");
@@ -526,6 +538,20 @@ async function handleSendMessage(id, params) {
 
   if (!message) {
     throw new Error("failed to create text message");
+  }
+
+  const replyTo = String(params?.reply_to ?? "").trim();
+  if (replyTo) {
+    const originalMessage = runtime.replyCache.get(replyTo);
+    if (!originalMessage) {
+      throw new Error(`reply target not found: ${replyTo}`);
+    }
+    if (typeof runtime.messageService.replyMessage !== "function") {
+      throw new Error("reply_message is unavailable");
+    }
+    const result = await runtime.messageService.replyMessage(message, originalMessage, {});
+    emit(okResponse(id, sendResultFromSdkResult(result)));
+    return;
   }
 
   const result = await sendCreatedMessage(message, conversationId);

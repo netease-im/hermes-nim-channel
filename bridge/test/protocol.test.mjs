@@ -7,6 +7,7 @@ import {
   collectReadReceiptBatches,
   normalizeTarget,
   parseBridgeConfig,
+  ReplyMessageCache,
   toInboundMessage,
 } from "../src/config.mjs";
 import {
@@ -151,6 +152,35 @@ test("team read receipt batches are bounded", () => {
   assert.equal(batches.teamBatches.length, 2);
   assert.equal(batches.teamBatches[0].length, 50);
   assert.equal(batches.teamBatches[1].length, 1);
+});
+
+test("reply message cache indexes server and client message ids", () => {
+  const cache = new ReplyMessageCache(10);
+  const message = {
+    messageServerId: "server-1",
+    messageClientId: "client-1",
+    text: "hello",
+  };
+  cache.add(message);
+  assert.equal(cache.get("server-1"), message);
+  assert.equal(cache.get("client-1"), message);
+  assert.equal(cache.get("missing"), null);
+});
+
+test("reply message cache is bounded and ignores empty ids", () => {
+  const cache = new ReplyMessageCache(2);
+  cache.add({ messageServerId: "", messageClientId: "" });
+  assert.equal(cache.get(""), null);
+
+  const first = { messageServerId: "server-1" };
+  const second = { messageServerId: "server-2" };
+  const third = { messageServerId: "server-3" };
+  cache.add(first);
+  cache.add(second);
+  cache.add(third);
+  assert.equal(cache.get("server-1"), null);
+  assert.equal(cache.get("server-2"), second);
+  assert.equal(cache.get("server-3"), third);
 });
 
 test("target normalization preserves team routing", () => {
