@@ -215,6 +215,41 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("qchat", bridge.qchat_sent[0]["session_type"])
         self.assertEqual("qchat:server-a:channel-b", bridge.qchat_sent[0]["chat_id"])
 
+    async def test_send_blocks_qchat_when_policy_disables_target(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "qchat_policy": "disabled",
+                }
+            ),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send("qchat:server-a:channel-b", "hello")
+        self.assertFalse(result.success)
+        self.assertEqual("qchat send blocked by policy", result.error)
+        self.assertEqual([], bridge.qchat_sent)
+
+    async def test_send_blocks_qchat_allowlist_without_target_match(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "qchat_policy": "allowlist",
+                    "qchat_allow_from": ["server-a|channel-a"],
+                }
+            ),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send("qchat:server-a:channel-b", "hello")
+        self.assertFalse(result.success)
+        self.assertEqual("qchat send blocked by policy", result.error)
+        self.assertEqual([], bridge.qchat_sent)
+
     async def test_send_image_file_uses_bridge_media_path(self) -> None:
         bridge = FakeBridge()
         adapter = NimAdapter(
@@ -227,6 +262,18 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("image", bridge.media_sent[0]["media_kind"])
         self.assertEqual("team", bridge.media_sent[0]["session_type"])
         self.assertEqual("/tmp/test.png", bridge.media_sent[0]["file_path"])
+
+    async def test_qchat_media_is_rejected_without_bridge_send(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send_image_file("qchat:server-a:channel-b", "/tmp/test.png")
+        self.assertFalse(result.success)
+        self.assertEqual("qchat media is not supported", result.error)
+        self.assertEqual([], bridge.media_sent)
 
     async def test_media_caption_sends_followup_text(self) -> None:
         bridge = FakeBridge()

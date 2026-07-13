@@ -72,6 +72,36 @@ export function isQChatAllowed({ policy, allowFrom = [], serverId, channelId, se
   });
 }
 
+export function isQChatTargetAllowed({ policy, allowFrom = [], serverId, channelId }) {
+  const normalizedPolicy = String(policy ?? "").trim().toLowerCase();
+  if (normalizedPolicy === "disabled") {
+    return false;
+  }
+  if (normalizedPolicy === "open") {
+    return true;
+  }
+  if (!allowFrom.length) {
+    return false;
+  }
+
+  const nServer = String(serverId ?? "").trim().toLowerCase();
+  const nChannel = String(channelId ?? "").trim().toLowerCase();
+
+  return allowFrom.some((entry) => {
+    const parts = String(entry ?? "").split("|");
+    const entryServer = (parts[0] ?? "").trim().toLowerCase();
+    const entryChannel = (parts[1] ?? "").trim().toLowerCase();
+
+    if (!entryServer || entryServer !== nServer) {
+      return false;
+    }
+    if (entryChannel && entryChannel !== nChannel) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function normalizeMessageType(message) {
   const type = message?.type ?? (typeof message?.msg_type === "string" ? message.msg_type : undefined);
   const legacyType = typeof message?.msg_type === "number" ? message.msg_type : undefined;

@@ -5,6 +5,7 @@ import { parseBridgeConfig } from "../src/config.mjs";
 import {
   deriveQChatServerIds,
   isQChatAllowed,
+  isQChatTargetAllowed,
   normalizeQChatMessage,
   normalizeQChatTarget,
 } from "../src/qchat.mjs";
@@ -48,6 +49,36 @@ test("qchat allowlist matching uses server channel and sender scope", () => {
       serverId: "server-a",
       channelId: "channel-x",
       senderAccid: "bot",
+    }),
+    false,
+  );
+});
+
+test("qchat outbound target policy blocks disabled and unmatched targets", () => {
+  assert.equal(
+    isQChatTargetAllowed({
+      policy: "disabled",
+      allowFrom: ["server-a|channel-b"],
+      serverId: "server-a",
+      channelId: "channel-b",
+    }),
+    false,
+  );
+  assert.equal(
+    isQChatTargetAllowed({
+      policy: "allowlist",
+      allowFrom: ["server-a|channel-b|alice"],
+      serverId: "server-a",
+      channelId: "channel-b",
+    }),
+    true,
+  );
+  assert.equal(
+    isQChatTargetAllowed({
+      policy: "allowlist",
+      allowFrom: ["server-a|channel-b"],
+      serverId: "server-a",
+      channelId: "channel-x",
     }),
     false,
   );

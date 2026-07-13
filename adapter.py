@@ -12,7 +12,12 @@ from gateway.session import SessionSource
 
 from hermes_nim_channel.config import load_nim_config
 from hermes_nim_channel.inbound_media import infer_media_kind, parse_inbound_attachment
-from hermes_nim_channel.qchat import build_qchat_chat_id, is_qchat_allowed, parse_qchat_chat_id
+from hermes_nim_channel.qchat import (
+    build_qchat_chat_id,
+    is_qchat_allowed,
+    is_qchat_target_allowed,
+    parse_qchat_chat_id,
+)
 from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
 
 
@@ -48,6 +53,17 @@ class HermesNimAdapter(BasePlatformAdapter):
     ) -> SendResult:
         session_type = self._infer_session_type(chat_id, metadata)
         if session_type == "qchat":
+            target = parse_qchat_chat_id(chat_id)
+            if target is None:
+                return SendResult(success=False, error=f"invalid QChat target: {chat_id}")
+            server_id, channel_id = target
+            if not is_qchat_target_allowed(
+                policy=self.resolved.qchat_policy,
+                allow_from=self.resolved.qchat_allow_from,
+                server_id=server_id,
+                channel_id=channel_id,
+            ):
+                return SendResult(success=False, error="qchat send blocked by policy")
             result = await self._bridge.send_qchat_message(
                 chat_id=chat_id,
                 text=str(content or ""),
@@ -330,6 +346,8 @@ class HermesNimAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None,
     ) -> SendResult:
         session_type = self._infer_session_type(chat_id, metadata)
+        if session_type == "qchat":
+            return SendResult(success=False, error="qchat media is not supported")
         result = await self._bridge.send_media(
             chat_id=chat_id,
             file_path=str(Path(file_path)),

@@ -11,7 +11,7 @@ import {
 import { createMediaMessage, normalizeMediaKind } from "./src/media.mjs";
 import {
   deriveQChatServerIds,
-  isQChatAllowed,
+  isQChatTargetAllowed,
   normalizeQChatMessage,
   normalizeQChatSystemNotification,
   normalizeQChatTarget,
@@ -231,7 +231,13 @@ async function setupQChatRuntime(nim, config) {
   nim.qchatMsg.on("message", messageHandler);
   nim.qchatMsg.on("systemNotification", systemNotificationHandler);
 
-  await refreshSubscriptions();
+  try {
+    await refreshSubscriptions();
+  } catch (error) {
+    console.warn(
+      `${logPrefix} initial subscription failed — error: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   return {
     stop: async () => {
@@ -433,6 +439,20 @@ async function handleSendQChatMessage(id, params) {
   }
 
   const target = normalizeQChatTarget(params?.chat_id ?? params?.target_id ?? "");
+  const qchatConfig = runtime.config?.qchat ?? {};
+  const policy = String(qchatConfig.policy ?? "open").trim() || "open";
+  const allowFrom = Array.isArray(qchatConfig.allowFrom) ? qchatConfig.allowFrom : [];
+  if (
+    !isQChatTargetAllowed({
+      policy,
+      allowFrom,
+      serverId: target.serverId,
+      channelId: target.channelId,
+    })
+  ) {
+    throw new Error("qchat send blocked by policy");
+  }
+
   const response = await runtime.nim.qchatMsg.sendMessage({
     serverId: target.serverId,
     channelId: target.channelId,

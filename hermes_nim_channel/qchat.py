@@ -75,3 +75,37 @@ def is_qchat_allowed(
         return True
 
     return False
+
+
+def is_qchat_target_allowed(
+    *,
+    policy: str,
+    allow_from: Iterable[str | int],
+    server_id: str,
+    channel_id: str,
+) -> bool:
+    normalized_policy = str(policy or "").strip().lower()
+    if normalized_policy == "disabled":
+        return False
+    if normalized_policy == "open":
+        return True
+
+    allow_entries = [str(entry).strip().lower() for entry in allow_from if str(entry).strip()]
+    if not allow_entries:
+        return False
+
+    server = str(server_id or "").strip().lower()
+    channel = str(channel_id or "").strip().lower()
+
+    for entry in allow_entries:
+        parts = entry.split("|")
+        entry_server = parts[0].strip().lower() if len(parts) > 0 else ""
+        entry_channel = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if not entry_server or entry_server != server:
+            continue
+        if entry_channel and entry_channel != channel:
+            continue
+        return True
+
+    return False
