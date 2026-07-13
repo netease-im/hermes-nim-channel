@@ -10,6 +10,7 @@ import {
   normalizeTarget,
   parseBridgeConfig,
   ReplyMessageCache,
+  splitMessageIntoChunks,
   toInboundMessage,
 } from "./src/config.mjs";
 import { createMediaMessage, normalizeMediaKind } from "./src/media.mjs";
@@ -523,6 +524,16 @@ function sendResultFromSdkResult(result) {
   };
 }
 
+function responseFromChunkResults(results) {
+  const last = results[results.length - 1] ?? {};
+  return {
+    message_id: String(last.message_id ?? ""),
+    client_message_id: String(last.client_message_id ?? ""),
+    chunks: results,
+    chunk_count: results.length,
+  };
+}
+
 async function handleSendMessage(id, params) {
   if (!runtime) {
     throw new Error("bridge is not connected");
@@ -534,11 +545,7 @@ async function handleSendMessage(id, params) {
     target.id,
     target.sessionType,
   );
-  const message = runtime.messageCreator.createTextMessage(String(params?.text ?? ""));
-
-  if (!message) {
-    throw new Error("failed to create text message");
-  }
+  const chunks = splitMessageIntoChunks(params?.text ?? "", runtime.config?.textChunkLimit);
 
   const replyTo = String(params?.reply_to ?? "").trim();
   if (replyTo) {
@@ -549,14 +556,28 @@ async function handleSendMessage(id, params) {
     if (typeof runtime.messageService.replyMessage !== "function") {
       throw new Error("reply_message is unavailable");
     }
-    const result = await runtime.messageService.replyMessage(message, originalMessage, {});
-    emit(okResponse(id, sendResultFromSdkResult(result)));
+    const results = [];
+    for (const chunk of chunks) {
+      const message = runtime.messageCreator.createTextMessage(chunk);
+      if (!message) {
+        throw new Error("failed to create text message");
+      }
+      results.push(sendResultFromSdkResult(await runtime.messageService.replyMessage(message, originalMessage, {})));
+    }
+    emit(okResponse(id, responseFromChunkResults(results)));
     return;
   }
 
-  const result = await sendCreatedMessage(message, conversationId);
+  const results = [];
+  for (const chunk of chunks) {
+    const message = runtime.messageCreator.createTextMessage(chunk);
+    if (!message) {
+      throw new Error("failed to create text message");
+    }
+    results.push(await sendCreatedMessage(message, conversationId));
+  }
 
-  emit(okResponse(id, result));
+  emit(okResponse(id, responseFromChunkResults(results)));
 }
 
 async function handleSendQChatMessage(id, params) {

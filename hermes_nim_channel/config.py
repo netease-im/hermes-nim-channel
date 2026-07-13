@@ -41,6 +41,7 @@ class NimResolvedConfig:
     home_channel: str | None = None
     bridge_command: list[str] = field(default_factory=lambda: ["node", "bridge/index.mjs"])
     media_max_mb: int = 30
+    text_chunk_limit: int = 4000
     debug: bool = False
     weblbs_url: str | None = None
     link_web: str | None = None
@@ -65,6 +66,7 @@ class NimResolvedConfig:
             },
             "debug": self.debug,
             "media_max_mb": self.media_max_mb,
+            "text_chunk_limit": self.text_chunk_limit,
             "home_channel": self.home_channel,
             "p2p": {
                 "policy": self.p2p_policy,
@@ -209,6 +211,7 @@ def load_nim_config(
         home_channel=str(_pick(extra, env, "home_channel", "NIM_HOME_CHANNEL") or "").strip() or None,
         bridge_command=_resolve_bridge_command(_pick(extra, env, "bridge_command", "NIM_BRIDGE_COMMAND")),
         media_max_mb=int(_pick(extra, env, "media_max_mb", "NIM_MEDIA_MAX_MB") or 30),
+        text_chunk_limit=int(_pick(extra, env, "text_chunk_limit", "NIM_TEXT_CHUNK_LIMIT") or 4000),
         debug=_as_bool(_pick(extra, env, "debug", "NIM_DEBUG"), default=False),
         weblbs_url=_as_optional_str(_pick_any(extra, env, ("weblbs_url", "NIM_WEBLBS_URL"), ("weblbsUrl", "NIM_WEBLBS_URL"))),
         link_web=_as_optional_str(_pick(extra, env, "link_web", "NIM_LINK_WEB")),

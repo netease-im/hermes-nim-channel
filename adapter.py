@@ -434,6 +434,7 @@ def _env_enablement() -> dict[str, Any] | None:
         "NIM_NOS_SSL": ("nos_ssl", lambda value: value.strip().lower() in {"1", "true", "yes", "on"}),
         "NIM_NOS_ACCELERATE": ("nos_accelerate", lambda value: value.strip()),
         "NIM_NOS_ACCELERATE_HOST": ("nos_accelerate_host", lambda value: value.strip()),
+        "NIM_TEXT_CHUNK_LIMIT": ("text_chunk_limit", lambda value: int(value.strip())),
         "NIM_BRIDGE_COMMAND": ("bridge_command", lambda value: value.strip()),
     }
     for env_name, (key, parser) in optional_map.items():

@@ -33,6 +33,7 @@ export function parseBridgeConfig(raw) {
     credentials: resolved,
     debug: Boolean(raw?.debug),
     mediaMaxMb: Number(raw?.media_max_mb ?? raw?.mediaMaxMb ?? 30),
+    textChunkLimit: Number(raw?.text_chunk_limit ?? raw?.textChunkLimit ?? raw?.advanced?.textChunkLimit ?? 4000),
     homeChannel: raw?.home_channel ?? raw?.homeChannel ?? null,
     p2p: {
       policy: String(raw?.p2p?.policy ?? raw?.p2p_policy ?? raw?.p2pPolicy ?? "open").trim() || "open",
@@ -259,6 +260,37 @@ export class ReplyMessageCache {
     }
     return this.entries.get(key) ?? null;
   }
+}
+
+export function splitMessageIntoChunks(text, maxLength = 4000) {
+  const limit = Math.max(1, Number(maxLength) || 4000);
+  const content = String(text ?? "");
+  if (content.length <= limit) {
+    return [content];
+  }
+
+  const chunks = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= limit) {
+      chunks.push(remaining);
+      break;
+    }
+
+    let splitIndex = remaining.lastIndexOf("\n", limit);
+    if (splitIndex === -1 || splitIndex < limit * 0.5) {
+      splitIndex = remaining.lastIndexOf(" ", limit);
+    }
+    if (splitIndex === -1 || splitIndex < limit * 0.5) {
+      splitIndex = limit;
+    }
+
+    chunks.push(remaining.slice(0, splitIndex));
+    remaining = remaining.slice(splitIndex).trimStart();
+  }
+
+  return chunks;
 }
 
 function normalizeAttachment(attach) {

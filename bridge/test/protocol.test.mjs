@@ -8,6 +8,7 @@ import {
   normalizeTarget,
   parseBridgeConfig,
   ReplyMessageCache,
+  splitMessageIntoChunks,
   toInboundMessage,
 } from "../src/config.mjs";
 import {
@@ -35,6 +36,14 @@ test("config parser accepts shorthand credentials", () => {
   });
   assert.equal(parsed.credentials.appKey, "app");
   assert.equal(parsed.credentials.account, "bot");
+});
+
+test("config parser accepts text chunk limit", () => {
+  const parsed = parseBridgeConfig({
+    nim_token: "app|bot|secret",
+    text_chunk_limit: 1234,
+  });
+  assert.equal(parsed.textChunkLimit, 1234);
 });
 
 test("private deployment config builds SDK constructor options", () => {
@@ -181,6 +190,12 @@ test("reply message cache is bounded and ignores empty ids", () => {
   assert.equal(cache.get("server-1"), null);
   assert.equal(cache.get("server-2"), second);
   assert.equal(cache.get("server-3"), third);
+});
+
+test("text chunking prefers newline and space boundaries", () => {
+  assert.deepEqual(splitMessageIntoChunks("short", 10), ["short"]);
+  assert.deepEqual(splitMessageIntoChunks("alpha\nbeta gamma", 8), ["alpha", "beta", "gamma"]);
+  assert.deepEqual(splitMessageIntoChunks("abcdef", 3), ["abc", "def"]);
 });
 
 test("target normalization preserves team routing", () => {

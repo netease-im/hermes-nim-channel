@@ -84,6 +84,10 @@ optional_env:
     description: "Private deployment NOS accelerate host"
     prompt: "NOS accelerate host"
     password: false
+  - name: NIM_TEXT_CHUNK_LIMIT
+    description: "Maximum characters per outbound text message chunk"
+    prompt: "Text chunk limit"
+    password: false
   - name: NIM_HOME_CHANNEL
     description: "Default NIM target for proactive delivery"
     prompt: "Home channel"

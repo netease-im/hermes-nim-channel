@@ -53,6 +53,7 @@ class NimConfigTests(unittest.TestCase):
                 "NIM_GROUP_POLICY": "open",
                 "NIM_QCHAT_POLICY": "allowlist",
                 "NIM_QCHAT_ALLOW_FROM": "server-a|channel-a,server-b",
+                "NIM_TEXT_CHUNK_LIMIT": "1234",
             },
         )
         assert resolved.credentials is not None
@@ -63,6 +64,8 @@ class NimConfigTests(unittest.TestCase):
         self.assertEqual("open", resolved.group_policy)
         self.assertEqual("allowlist", resolved.qchat_policy)
         self.assertEqual(["server-a|channel-a", "server-b"], resolved.qchat_allow_from)
+        self.assertEqual(1234, resolved.text_chunk_limit)
+        self.assertEqual(1234, resolved.to_bridge_payload()["text_chunk_limit"])
 
     def test_qchat_allowlist_alias_is_supported(self) -> None:
         resolved = load_nim_config(

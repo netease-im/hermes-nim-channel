@@ -75,6 +75,7 @@ Additional controls:
 - `NIM_NOS_SSL`: whether private NOS download uses HTTPS
 - `NIM_NOS_ACCELERATE`: private NOS accelerate URL format
 - `NIM_NOS_ACCELERATE_HOST`: private NOS accelerate host
+- `NIM_TEXT_CHUNK_LIMIT`: maximum characters per outbound text message chunk; defaults to `4000`
 - `NIM_HOME_CHANNEL`: default NIM target for proactive sends
 - `NIM_BRIDGE_COMMAND`: override bridge command; default points to the bundled `bridge/index.mjs`
 
