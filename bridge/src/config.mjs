@@ -34,6 +34,16 @@ export function parseBridgeConfig(raw) {
     debug: Boolean(raw?.debug),
     mediaMaxMb: Number(raw?.media_max_mb ?? raw?.mediaMaxMb ?? 30),
     homeChannel: raw?.home_channel ?? raw?.homeChannel ?? null,
+    p2p: {
+      policy: String(raw?.p2p?.policy ?? raw?.p2p_policy ?? raw?.p2pPolicy ?? "open").trim() || "open",
+      allowFrom: Array.isArray(raw?.p2p?.allowFrom)
+        ? raw.p2p.allowFrom
+        : Array.isArray(raw?.p2p_allow_from)
+          ? raw.p2p_allow_from
+          : Array.isArray(raw?.p2pAllowFrom)
+            ? raw.p2pAllowFrom
+            : [],
+    },
     advanced: {
       weblbsUrl: advanced.weblbsUrl ?? raw?.weblbsUrl ?? raw?.weblbs_url ?? null,
       link_web: advanced.link_web ?? raw?.link_web ?? null,
@@ -54,6 +64,24 @@ export function parseBridgeConfig(raw) {
             : [],
     },
   };
+}
+
+export function isP2pApplicantAllowed({ policy = "open", allowFrom = [], applicantId = "" } = {}) {
+  const normalizedPolicy = String(policy ?? "open").trim() || "open";
+  const normalizedApplicant = String(applicantId ?? "").trim().toLowerCase();
+  if (!normalizedApplicant || normalizedPolicy === "disabled") {
+    return false;
+  }
+  if (normalizedPolicy === "open") {
+    return true;
+  }
+  if (normalizedPolicy !== "allowlist") {
+    return false;
+  }
+  return (Array.isArray(allowFrom) ? allowFrom : [])
+    .map((item) => String(item ?? "").trim().toLowerCase())
+    .filter(Boolean)
+    .includes(normalizedApplicant);
 }
 
 function setStringOption(target, key, value) {

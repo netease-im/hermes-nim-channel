@@ -40,6 +40,14 @@ optional_env:
     description: "Comma-separated allowed team IDs"
     prompt: "Allowed team IDs"
     password: false
+  - name: NIM_P2P_POLICY
+    description: "P2P policy: open, allowlist, or disabled"
+    prompt: "P2P policy"
+    password: false
+  - name: NIM_P2P_ALLOW_FROM
+    description: "Comma-separated P2P applicant/sender allowlist"
+    prompt: "P2P allowlist"
+    password: false
   - name: NIM_QCHAT_POLICY
     description: "QChat policy: open, allowlist, or disabled"
     prompt: "QChat policy"

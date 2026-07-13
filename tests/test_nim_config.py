@@ -57,6 +57,8 @@ class NimConfigTests(unittest.TestCase):
         )
         assert resolved.credentials is not None
         self.assertEqual(["alice", "bob"], resolved.allowed_users)
+        self.assertEqual("allowlist", resolved.p2p_policy)
+        self.assertEqual(["alice", "bob"], resolved.p2p_allow_from)
         self.assertEqual(["team-a", "team-b"], resolved.group_allowlist)
         self.assertEqual("open", resolved.group_policy)
         self.assertEqual("allowlist", resolved.qchat_policy)
@@ -74,6 +76,23 @@ class NimConfigTests(unittest.TestCase):
         )
         assert resolved.credentials is not None
         self.assertEqual(["server-x|channel-y"], resolved.qchat_allow_from)
+
+    def test_explicit_p2p_policy_overrides_legacy_direct_allowlist(self) -> None:
+        resolved = load_nim_config(
+            PlatformConfig(),
+            {
+                "NIM_APP_KEY": "app",
+                "NIM_ACCOUNT": "bot",
+                "NIM_TOKEN": "secret",
+                "NIM_ALLOWED_USERS": "legacy-user",
+                "NIM_P2P_POLICY": "open",
+                "NIM_P2P_ALLOW_FROM": "alice,bob",
+            },
+        )
+        payload = resolved.to_bridge_payload()
+        self.assertEqual("open", resolved.p2p_policy)
+        self.assertEqual(["alice", "bob"], resolved.p2p_allow_from)
+        self.assertEqual({"policy": "open", "allowFrom": ["alice", "bob"]}, payload["p2p"])
 
     def test_private_deployment_endpoints_are_added_to_bridge_payload(self) -> None:
         resolved = load_nim_config(

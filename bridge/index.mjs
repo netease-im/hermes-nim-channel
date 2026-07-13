@@ -5,6 +5,7 @@ import readline from "node:readline";
 import {
   buildNimConstructorOptions,
   buildConversationId,
+  isP2pApplicantAllowed,
   normalizeTarget,
   parseBridgeConfig,
   toInboundMessage,
@@ -27,6 +28,7 @@ import {
 
 let runtime = null;
 let qchatRuntime = null;
+let friendRuntime = null;
 
 function writeStderr(args) {
   const text = args
@@ -54,6 +56,12 @@ function emit(message) {
 }
 
 async function cleanupRuntime() {
+  if (friendRuntime) {
+    try {
+      await friendRuntime.stop();
+    } catch {}
+    friendRuntime = null;
+  }
   if (qchatRuntime) {
     try {
       await qchatRuntime.stop();
@@ -73,6 +81,59 @@ async function cleanupRuntime() {
   } catch {}
 
   runtime = null;
+}
+
+function setupFriendRuntime(nim, config) {
+  const friendService = nim?.V2NIMFriendService;
+  if (!friendService?.on) {
+    console.warn("[nim] friend service is unavailable; friend auto-accept disabled");
+    return null;
+  }
+  if (typeof friendService.acceptAddApplication !== "function") {
+    console.warn("[nim] friend accept API is unavailable; friend auto-accept disabled");
+    return null;
+  }
+
+  const p2pConfig = config?.p2p ?? {};
+  const policy = String(p2pConfig.policy ?? "open").trim() || "open";
+  const allowFrom = Array.isArray(p2pConfig.allowFrom) ? p2pConfig.allowFrom : [];
+
+  const friendApplicationHandler = async (application) => {
+    const applicantId = String(
+      application?.applicantAccountId ??
+        application?.applicantAccid ??
+        application?.fromAccountId ??
+        application?.fromAccid ??
+        "",
+    ).trim();
+    if (!applicantId) {
+      console.warn("[nim] friend application ignored — missing applicant id");
+      return;
+    }
+    if (!isP2pApplicantAllowed({ policy, allowFrom, applicantId })) {
+      console.info(`[nim] friend application ignored — applicant: ${applicantId}, policy: ${policy}`);
+      return;
+    }
+    try {
+      await friendService.acceptAddApplication(application);
+      console.info(`[nim] friend application auto-accepted — applicant: ${applicantId}`);
+    } catch (error) {
+      console.warn(
+        `[nim] friend application accept failed — applicant: ${applicantId}, error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  friendService.on("onFriendAddApplication", friendApplicationHandler);
+  console.info(`[nim] friend auto-accept listener registered — policy: ${policy}`);
+
+  return {
+    stop: () => {
+      try {
+        friendService.off?.("onFriendAddApplication", friendApplicationHandler);
+      } catch {}
+    },
+  };
 }
 
 async function discoverJoinedQChatServers(nim) {
@@ -314,6 +375,7 @@ async function handleConnect(id, params) {
     messageCreator,
     config,
   };
+  friendRuntime = setupFriendRuntime(nim, config);
   qchatRuntime = await setupQChatRuntime(nim, config);
 
   emit(

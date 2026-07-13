@@ -64,6 +64,8 @@ Additional controls:
 - `NIM_ALLOW_ALL_USERS`: allow all DMs when `true`
 - `NIM_GROUP_POLICY`: `open`, `allowlist`, or `disabled`
 - `NIM_GROUP_ALLOWLIST`: comma-separated team IDs
+- `NIM_P2P_POLICY`: `open`, `allowlist`, or `disabled`; controls DM filtering and friend auto-accept
+- `NIM_P2P_ALLOW_FROM`: comma-separated P2P sender/applicant allowlist; defaults to `NIM_ALLOWED_USERS`
 - `NIM_QCHAT_POLICY`: `open`, `allowlist`, or `disabled`
 - `NIM_QCHAT_ALLOW_FROM`: comma-separated QChat allowlist entries in `server|channel|account` form
 - `NIM_WEBLBS_URL`: private deployment LBS URL

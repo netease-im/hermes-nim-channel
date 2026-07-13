@@ -32,6 +32,8 @@ class NimResolvedConfig:
     credentials: NimCredentials | None
     allowed_users: list[str] = field(default_factory=list)
     allow_all_users: bool = False
+    p2p_policy: str = "open"
+    p2p_allow_from: list[str] = field(default_factory=list)
     group_policy: str = "allowlist"
     group_allowlist: list[str] = field(default_factory=list)
     qchat_policy: str = "open"
@@ -64,6 +66,10 @@ class NimResolvedConfig:
             "debug": self.debug,
             "media_max_mb": self.media_max_mb,
             "home_channel": self.home_channel,
+            "p2p": {
+                "policy": self.p2p_policy,
+                "allowFrom": self.p2p_allow_from,
+            },
             "advanced": {
                 "weblbsUrl": self.weblbs_url,
                 "link_web": self.link_web,
@@ -173,15 +179,29 @@ def load_nim_config(
     if not qchat_allow_from:
         qchat_allow_from = _as_list(_pick(extra, env, "qchat_allowlist", "NIM_QCHAT_ALLOWLIST"))
     nos_ssl_value = _pick_any(extra, env, ("nos_ssl", "NIM_NOS_SSL"), ("nosSsl", "NIM_NOS_SSL"))
+    allowed_users = _as_list(_pick(extra, env, "allowed_users", "NIM_ALLOWED_USERS"))
+    allow_all_users = _as_bool(
+        _pick(extra, env, "allow_all_users", "NIM_ALLOW_ALL_USERS"),
+        default=False,
+    )
+    p2p_allow_from = _as_list(_pick(extra, env, "p2p_allow_from", "NIM_P2P_ALLOW_FROM"))
+    if not p2p_allow_from:
+        p2p_allow_from = allowed_users
+    explicit_p2p_policy = _pick(extra, env, "p2p_policy", "NIM_P2P_POLICY")
+    if explicit_p2p_policy not in (None, ""):
+        p2p_policy = str(explicit_p2p_policy).strip() or "open"
+    elif allow_all_users or not p2p_allow_from:
+        p2p_policy = "open"
+    else:
+        p2p_policy = "allowlist"
 
     return NimResolvedConfig(
         enabled=platform.enabled,
         credentials=credentials,
-        allowed_users=_as_list(_pick(extra, env, "allowed_users", "NIM_ALLOWED_USERS")),
-        allow_all_users=_as_bool(
-            _pick(extra, env, "allow_all_users", "NIM_ALLOW_ALL_USERS"),
-            default=False,
-        ),
+        allowed_users=allowed_users,
+        allow_all_users=allow_all_users,
+        p2p_policy=p2p_policy,
+        p2p_allow_from=p2p_allow_from,
         group_policy=str(_pick(extra, env, "group_policy", "NIM_GROUP_POLICY") or "allowlist").strip(),
         group_allowlist=_as_list(_pick(extra, env, "group_allowlist", "NIM_GROUP_ALLOWLIST")),
         qchat_policy=str(_pick(extra, env, "qchat_policy", "NIM_QCHAT_POLICY") or "open").strip(),

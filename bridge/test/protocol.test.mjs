@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildNimConstructorOptions,
+  isP2pApplicantAllowed,
   normalizeTarget,
   parseBridgeConfig,
   toInboundMessage,
@@ -81,6 +82,42 @@ test("private deployment config ignores blank endpoints and parses boolean strin
   assert.deepEqual(options.V2NIMLoginServiceConfig, {
     linkUrl: "wss://link.example.com",
   });
+});
+
+test("bridge config parses p2p policy controls", () => {
+  const parsed = parseBridgeConfig({
+    nim_token: "app|bot|secret",
+    p2p: {
+      policy: "allowlist",
+      allowFrom: ["Alice", "bob"],
+    },
+  });
+  assert.deepEqual(parsed.p2p, {
+    policy: "allowlist",
+    allowFrom: ["Alice", "bob"],
+  });
+});
+
+test("p2p applicant policy supports open allowlist and disabled modes", () => {
+  assert.equal(isP2pApplicantAllowed({ policy: "open", applicantId: "alice" }), true);
+  assert.equal(
+    isP2pApplicantAllowed({
+      policy: "allowlist",
+      allowFrom: ["Alice"],
+      applicantId: "alice",
+    }),
+    true,
+  );
+  assert.equal(
+    isP2pApplicantAllowed({
+      policy: "allowlist",
+      allowFrom: ["bob"],
+      applicantId: "alice",
+    }),
+    false,
+  );
+  assert.equal(isP2pApplicantAllowed({ policy: "disabled", applicantId: "alice" }), false);
+  assert.equal(isP2pApplicantAllowed({ policy: "open", applicantId: "" }), false);
 });
 
 test("target normalization preserves team routing", () => {

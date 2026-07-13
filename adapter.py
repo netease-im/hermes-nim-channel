@@ -204,6 +204,12 @@ class HermesNimAdapter(BasePlatformAdapter):
         return True
 
     def _is_allowed_direct_sender(self, sender_id: str) -> bool:
+        if self.resolved.p2p_policy == "disabled":
+            return False
+        if self.resolved.p2p_policy == "open":
+            return True
+        if self.resolved.p2p_policy == "allowlist":
+            return sender_id in self.resolved.p2p_allow_from
         if self.resolved.allow_all_users:
             return True
         if not self.resolved.allowed_users:
@@ -409,6 +415,11 @@ def _env_enablement() -> dict[str, Any] | None:
         "NIM_GROUP_POLICY": ("group_policy", lambda value: value.strip()),
         "NIM_GROUP_ALLOWLIST": (
             "group_allowlist",
+            lambda value: [item.strip() for item in value.split(",") if item.strip()],
+        ),
+        "NIM_P2P_POLICY": ("p2p_policy", lambda value: value.strip()),
+        "NIM_P2P_ALLOW_FROM": (
+            "p2p_allow_from",
             lambda value: [item.strip() for item in value.split(",") if item.strip()],
         ),
         "NIM_QCHAT_POLICY": ("qchat_policy", lambda value: value.strip()),
