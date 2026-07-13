@@ -42,8 +42,12 @@ test("config parser accepts text chunk limit", () => {
   const parsed = parseBridgeConfig({
     nim_token: "app|bot|secret",
     text_chunk_limit: 1234,
+    legacy_login: "true",
+    antispam_enabled: "false",
   });
   assert.equal(parsed.textChunkLimit, 1234);
+  assert.equal(parsed.legacyLogin, true);
+  assert.equal(parsed.antispamEnabled, false);
 });
 
 test("private deployment config builds SDK constructor options", () => {

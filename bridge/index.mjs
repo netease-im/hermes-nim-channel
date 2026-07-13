@@ -371,7 +371,7 @@ async function handleConnect(id, params) {
   });
 
   await loginService.login(config.credentials.account, config.credentials.token, {
-    aiBot: 2,
+    aiBot: config.legacyLogin ? 0 : 2,
   });
 
   runtime = {
@@ -444,6 +444,14 @@ async function handleHealth(id) {
   );
 }
 
+function textSendOptions() {
+  return {
+    antispamConfig: {
+      antispamEnabled: Boolean(runtime?.config?.antispamEnabled),
+    },
+  };
+}
+
 async function sendCreatedMessage(message, conversationId) {
   if (!runtime) {
     throw new Error("bridge is not connected");
@@ -493,7 +501,7 @@ async function sendCreatedMessage(message, conversationId) {
 
     messageService.on("onSendMessage", listener);
     messageService
-      .sendMessage(message, conversationId, {})
+      .sendMessage(message, conversationId, textSendOptions())
       .catch((error) => {
         if (settled) {
           return;
@@ -562,7 +570,7 @@ async function handleSendMessage(id, params) {
       if (!message) {
         throw new Error("failed to create text message");
       }
-      results.push(sendResultFromSdkResult(await runtime.messageService.replyMessage(message, originalMessage, {})));
+      results.push(sendResultFromSdkResult(await runtime.messageService.replyMessage(message, originalMessage, textSendOptions())));
     }
     emit(okResponse(id, responseFromChunkResults(results)));
     return;

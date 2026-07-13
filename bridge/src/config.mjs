@@ -28,12 +28,16 @@ export function parseBridgeConfig(raw) {
   }
 
   const advanced = raw?.advanced ?? {};
+  const legacyLogin = optionalBoolean(raw?.legacy_login ?? raw?.legacyLogin ?? advanced.legacyLogin);
+  const antispamEnabled = optionalBoolean(raw?.antispam_enabled ?? raw?.antispamEnabled);
 
   return {
     credentials: resolved,
     debug: Boolean(raw?.debug),
     mediaMaxMb: Number(raw?.media_max_mb ?? raw?.mediaMaxMb ?? 30),
     textChunkLimit: Number(raw?.text_chunk_limit ?? raw?.textChunkLimit ?? raw?.advanced?.textChunkLimit ?? 4000),
+    legacyLogin: legacyLogin ?? false,
+    antispamEnabled: antispamEnabled ?? true,
     homeChannel: raw?.home_channel ?? raw?.homeChannel ?? null,
     p2p: {
       policy: String(raw?.p2p?.policy ?? raw?.p2p_policy ?? raw?.p2pPolicy ?? "open").trim() || "open",

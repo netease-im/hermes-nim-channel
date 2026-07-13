@@ -54,6 +54,8 @@ class NimConfigTests(unittest.TestCase):
                 "NIM_QCHAT_POLICY": "allowlist",
                 "NIM_QCHAT_ALLOW_FROM": "server-a|channel-a,server-b",
                 "NIM_TEXT_CHUNK_LIMIT": "1234",
+                "NIM_LEGACY_LOGIN": "true",
+                "NIM_ANTISPAM_ENABLED": "false",
             },
         )
         assert resolved.credentials is not None
@@ -65,7 +67,10 @@ class NimConfigTests(unittest.TestCase):
         self.assertEqual("allowlist", resolved.qchat_policy)
         self.assertEqual(["server-a|channel-a", "server-b"], resolved.qchat_allow_from)
         self.assertEqual(1234, resolved.text_chunk_limit)
-        self.assertEqual(1234, resolved.to_bridge_payload()["text_chunk_limit"])
+        payload = resolved.to_bridge_payload()
+        self.assertEqual(1234, payload["text_chunk_limit"])
+        self.assertTrue(payload["legacy_login"])
+        self.assertFalse(payload["antispam_enabled"])
 
     def test_qchat_allowlist_alias_is_supported(self) -> None:
         resolved = load_nim_config(

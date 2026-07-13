@@ -88,6 +88,14 @@ optional_env:
     description: "Maximum characters per outbound text message chunk"
     prompt: "Text chunk limit"
     password: false
+  - name: NIM_LEGACY_LOGIN
+    description: "Use legacy NIM login mode instead of AI bot login"
+    prompt: "Legacy login"
+    password: false
+  - name: NIM_ANTISPAM_ENABLED
+    description: "Enable SDK antispam config for outbound text"
+    prompt: "Antispam enabled"
+    password: false
   - name: NIM_HOME_CHANNEL
     description: "Default NIM target for proactive delivery"
     prompt: "Home channel"
