@@ -94,12 +94,31 @@ class NimAdapter(BasePlatformAdapter):
                 reply_to=(metadata or {}).get("reply_to"),
             )
         else:
-            result = await self._bridge.send_text(
-                chat_id=chat_id,
-                text=text,
-                session_type=session_type,
-                reply_to=(metadata or {}).get("reply_to"),
-            )
+            meta = metadata or {}
+            if meta.get("edit_message_id") or meta.get("edit"):
+                result = await self._bridge.edit_message(
+                    chat_id=chat_id,
+                    text=text,
+                    session_type=session_type,
+                    message_id=meta.get("edit_message_id") or meta.get("message_id"),
+                )
+            elif meta.get("stream"):
+                stream = meta.get("stream") if isinstance(meta.get("stream"), dict) else {}
+                result = await self._bridge.send_stream_text(
+                    chat_id=chat_id,
+                    text=text,
+                    session_type=session_type,
+                    chunk_index=int(stream.get("chunk_index", stream.get("index", 0))),
+                    is_complete=self._metadata_bool(stream.get("is_complete", stream.get("finish", True)), True),
+                    reply_to=meta.get("reply_to"),
+                )
+            else:
+                result = await self._bridge.send_text(
+                    chat_id=chat_id,
+                    text=text,
+                    session_type=session_type,
+                    reply_to=meta.get("reply_to"),
+                )
         return SendResult(
             success=True,
             message_id=str(result.get("message_id") or result.get("client_message_id") or ""),
@@ -308,7 +327,22 @@ class NimAdapter(BasePlatformAdapter):
             message_type=message_type.value,
             text=str(payload.get("text") or ""),
             source=source,
-            raw=payload,
+            raw={
+                **payload,
+                "metadata": {
+                    "topic_refer": payload.get("topic_refer"),
+                    "topic_info": payload.get("topic_info"),
+                    "topic_name": payload.get("topic_name"),
+                    "thread_reply": payload.get("thread_reply"),
+                    "batch_id": payload.get("batch_id"),
+                    "batch_key": payload.get("batch_key"),
+                    "batch_index": payload.get("batch_index"),
+                    "batch_size": payload.get("batch_size"),
+                    "quick_comment": payload.get("quick_comment"),
+                    "channel_topic": payload.get("channel_topic"),
+                    "channel_info": payload.get("channel_info"),
+                },
+            },
             media_urls=media_urls,
             media_types=media_types,
         )
@@ -327,6 +361,14 @@ class NimAdapter(BasePlatformAdapter):
             return MessageType(value)
         except ValueError:
             return MessageType.UNKNOWN
+
+    @staticmethod
+    def _metadata_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     async def _send_media_with_optional_caption(
         self,

@@ -5,13 +5,20 @@ import readline from "node:readline";
 import {
   buildNimConstructorOptions,
   buildConversationId,
+  addBatchMetadata,
+  addProcessingQuickComment,
   collectReadReceiptBatches,
+  createStreamChunkParams,
+  InboundBatchEmitter,
+  inboundBatchKey,
   isP2pApplicantAllowed,
   normalizeTarget,
   normalizeConnectionStatus,
   parseBridgeConfig,
   ReplyMessageCache,
   sendMediaMaybeTopicReply,
+  sendEditReplacementMessage,
+  sendStreamTextMessage,
   sendTextReplyMessage,
   splitMessageIntoChunks,
   toInboundMessage,
@@ -85,6 +92,20 @@ async function cleanupRuntime() {
   }
   if (!runtime) {
     return;
+  }
+
+  try {
+    runtime.inboundBatcher?.stop();
+  } catch {}
+  if (Array.isArray(runtime.quickCommentCleanups)) {
+    for (const item of runtime.quickCommentCleanups.splice(0)) {
+      try {
+        clearTimeout(item.timeout);
+      } catch {}
+      try {
+        await item.cleanup();
+      } catch {}
+    }
   }
 
   try {
@@ -404,6 +425,22 @@ async function handleConnect(id, params) {
   const messageService = nim.V2NIMMessageService;
   const messageCreator = nim.V2NIMMessageCreator;
   const replyCache = new ReplyMessageCache();
+  const inboundBatcher = new InboundBatchEmitter({
+    debounceMs: config.inboundDebounceMs,
+    emitBatch: async (items, batchKey, batchId) => {
+      const batchSize = items.length;
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        const payload = addBatchMetadata(item.payload, {
+          batchId,
+          batchKey,
+          batchIndex: index,
+          batchSize,
+        });
+        emit(eventMessage("message", payload));
+      }
+    },
+  });
 
   if (!loginService || !messageService || !messageCreator) {
     throw new Error("NIM SDK V2 services are unavailable");
@@ -414,12 +451,20 @@ async function handleConnect(id, params) {
       try {
         for (const message of messages) {
           replyCache.add(message);
-          emit(
-            eventMessage(
-              "message",
-              await toInboundMessage(message, config.credentials.account, nim),
-            ),
-          );
+          const payload = await toInboundMessage(message, config.credentials.account, nim);
+          const quickComment = await addProcessingQuickComment({
+            nim,
+            message,
+            config,
+            trackCleanup: (cleanup) => runtime?.quickCommentCleanups?.push(cleanup),
+          });
+          const batchKey = inboundBatchKey(payload);
+          inboundBatcher.enqueue(batchKey, {
+            payload: {
+              ...payload,
+              quick_comment: quickComment,
+            },
+          });
         }
         sendReadReceipts(messageService, messages);
       } catch (error) {
@@ -440,6 +485,8 @@ async function handleConnect(id, params) {
     messageService,
     messageCreator,
     replyCache,
+    inboundBatcher,
+    quickCommentCleanups: [],
     config,
   };
   connectionRuntime = setupConnectionRuntime(loginService);
@@ -653,6 +700,57 @@ async function handleSendMessage(id, params) {
   emit(okResponse(id, responseFromChunkResults(results)));
 }
 
+async function handleSendStreamMessage(id, params) {
+  if (!runtime) {
+    throw new Error("bridge is not connected");
+  }
+
+  const target = normalizeTarget(params?.chat_id, params?.session_type);
+  const conversationId = buildConversationId(runtime.nim, target.id, target.sessionType);
+  const text = String(params?.text ?? "");
+  const chunkIndex = Number(params?.chunk_index ?? params?.chunkIndex ?? 0);
+  const isComplete = Boolean(params?.is_complete ?? params?.isComplete ?? true);
+  const streamChunkParams = createStreamChunkParams({ text, chunkIndex, isComplete });
+  const replyTo = String(params?.reply_to ?? "").trim();
+  const originalMessage = replyTo ? runtime.replyCache.get(replyTo) : null;
+  if (replyTo && !originalMessage) {
+    throw new Error(`reply target not found: ${replyTo}`);
+  }
+  const message = runtime.messageCreator.createTextMessage(text);
+  if (!message) {
+    throw new Error("failed to create stream message");
+  }
+
+  const sent = await sendStreamTextMessage({
+    messageService: runtime.messageService,
+    message,
+    conversationId,
+    originalMessage,
+    options: textSendOptions(),
+    streamChunkParams,
+    sendOrdinary: () => sendCreatedMessage(message, conversationId),
+  });
+  const result = sent.mode === "fallback"
+    ? { ...sent.result, stream_fallback: true }
+    : sendResultFromSdkResult(sent.result);
+  emit(okResponse(id, result));
+}
+
+async function handleEditMessage(id, params) {
+  if (!runtime) {
+    throw new Error("bridge is not connected");
+  }
+  const target = normalizeTarget(params?.chat_id, params?.session_type);
+  const conversationId = buildConversationId(runtime.nim, target.id, target.sessionType);
+  const result = await sendEditReplacementMessage({
+    messageCreator: runtime.messageCreator,
+    text: params?.text ?? params?.new_text ?? "",
+    messageId: params?.message_id,
+    sendCreated: (message) => sendCreatedMessage(message, conversationId),
+  });
+  emit(okResponse(id, result));
+}
+
 async function handleSendQChatMessage(id, params) {
   if (!runtime) {
     throw new Error("bridge is not connected");
@@ -753,6 +851,14 @@ async function handleRequest(message) {
     }
     if (method === "send_message") {
       await handleSendMessage(id, message?.params);
+      return;
+    }
+    if (method === "send_stream_message") {
+      await handleSendStreamMessage(id, message?.params);
+      return;
+    }
+    if (method === "edit_message") {
+      await handleEditMessage(id, message?.params);
       return;
     }
     if (method === "send_qchat_message") {

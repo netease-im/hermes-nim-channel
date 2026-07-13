@@ -13,6 +13,8 @@ class FakeBridge:
         self.started = False
         self.stopped = False
         self.sent: list[dict[str, str]] = []
+        self.stream_sent: list[dict[str, object]] = []
+        self.edits: list[dict[str, object]] = []
         self.qchat_sent: list[dict[str, str]] = []
         self.media_sent: list[dict[str, str]] = []
         self.event_handler = None
@@ -73,6 +75,46 @@ class FakeBridge:
             }
         )
         return {"message_id": "media-1"}
+
+    async def send_stream_text(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        session_type: str,
+        chunk_index: int = 0,
+        is_complete: bool = True,
+        reply_to=None,
+    ) -> dict[str, str]:
+        self.stream_sent.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "session_type": session_type,
+                "chunk_index": chunk_index,
+                "is_complete": is_complete,
+                "reply_to": reply_to,
+            }
+        )
+        return {"message_id": "stream-1"}
+
+    async def edit_message(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        session_type: str,
+        message_id=None,
+    ) -> dict[str, str]:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "session_type": session_type,
+                "message_id": message_id,
+            }
+        )
+        return {"message_id": "edit-1"}
 
 
 class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -361,6 +403,85 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("image", bridge.media_sent[0]["media_kind"])
         self.assertEqual("team", bridge.media_sent[0]["session_type"])
         self.assertEqual("/tmp/test.png", bridge.media_sent[0]["file_path"])
+
+    async def test_send_uses_stream_metadata_path(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send(
+            "user:alice",
+            "chunk",
+            metadata={
+                "stream": {
+                    "chunk_index": 2,
+                    "is_complete": "false",
+                },
+                "reply_to": "server-1",
+            },
+        )
+        self.assertTrue(result.success)
+        self.assertEqual("stream-1", result.message_id)
+        self.assertEqual(2, bridge.stream_sent[0]["chunk_index"])
+        self.assertEqual(False, bridge.stream_sent[0]["is_complete"])
+        self.assertEqual("server-1", bridge.stream_sent[0]["reply_to"])
+
+    async def test_inbound_metadata_is_forwarded_in_raw_metadata(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "p2p",
+                    "sender_id": "alice",
+                    "target_id": "bot",
+                    "text": "hello",
+                    "message_id": "m-1",
+                    "message_type": "text",
+                    "topic_info": {"topicId": 1},
+                    "topic_name": "Topic",
+                    "batch_id": "batch-1",
+                    "batch_key": "p2p:alice",
+                    "batch_index": 0,
+                    "batch_size": 1,
+                    "quick_comment": {"index": 72},
+                },
+            }
+        )
+        metadata = accepted[0].raw["metadata"]
+        self.assertEqual({"topicId": 1}, metadata["topic_info"])
+        self.assertEqual("Topic", metadata["topic_name"])
+        self.assertEqual("batch-1", metadata["batch_id"])
+        self.assertEqual("p2p:alice", metadata["batch_key"])
+        self.assertEqual({"index": 72}, metadata["quick_comment"])
+
+    async def test_send_uses_edit_metadata_path(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send(
+            "team:team-1",
+            "replacement",
+            metadata={"edit_message_id": "old-1"},
+        )
+        self.assertTrue(result.success)
+        self.assertEqual("edit-1", result.message_id)
+        self.assertEqual("team", bridge.edits[0]["session_type"])
+        self.assertEqual("old-1", bridge.edits[0]["message_id"])
 
     async def test_send_media_forwards_reply_to(self) -> None:
         bridge = FakeBridge()

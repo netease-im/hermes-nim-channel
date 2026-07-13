@@ -42,6 +42,10 @@ class NimResolvedConfig:
     bridge_command: list[str] = field(default_factory=lambda: ["node", "bridge/index.mjs"])
     media_max_mb: int = 30
     text_chunk_limit: int = 4000
+    inbound_debounce_ms: int = 0
+    quick_comment_enabled: bool = False
+    quick_comment_index: int = 71
+    quick_comment_ttl_ms: int = 30000
     legacy_login: bool = False
     antispam_enabled: bool = True
     debug: bool = False
@@ -69,6 +73,12 @@ class NimResolvedConfig:
             "debug": self.debug,
             "media_max_mb": self.media_max_mb,
             "text_chunk_limit": self.text_chunk_limit,
+            "inbound_debounce_ms": self.inbound_debounce_ms,
+            "quick_comment": {
+                "enabled": self.quick_comment_enabled,
+                "index": self.quick_comment_index,
+                "ttl_ms": self.quick_comment_ttl_ms,
+            },
             "legacy_login": self.legacy_login,
             "antispam_enabled": self.antispam_enabled,
             "home_channel": self.home_channel,
@@ -127,6 +137,18 @@ def _pick_any(extra: dict[str, Any], env: dict[str, str], *keys: tuple[str, str]
 def _as_optional_str(value: Any) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def _as_int(value: Any, default: int, min_value: int | None = None) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    if min_value is not None and parsed < min_value:
+        return min_value
+    return parsed
 
 
 def parse_nim_token(value: Any) -> NimCredentials | None:
@@ -214,8 +236,12 @@ def load_nim_config(
         qchat_allow_from=qchat_allow_from,
         home_channel=str(_pick(extra, env, "home_channel", "NIM_HOME_CHANNEL") or "").strip() or None,
         bridge_command=_resolve_bridge_command(_pick(extra, env, "bridge_command", "NIM_BRIDGE_COMMAND")),
-        media_max_mb=int(_pick(extra, env, "media_max_mb", "NIM_MEDIA_MAX_MB") or 30),
-        text_chunk_limit=int(_pick(extra, env, "text_chunk_limit", "NIM_TEXT_CHUNK_LIMIT") or 4000),
+        media_max_mb=_as_int(_pick(extra, env, "media_max_mb", "NIM_MEDIA_MAX_MB"), 30, 1),
+        text_chunk_limit=_as_int(_pick(extra, env, "text_chunk_limit", "NIM_TEXT_CHUNK_LIMIT"), 4000, 1),
+        inbound_debounce_ms=_as_int(_pick(extra, env, "inbound_debounce_ms", "NIM_INBOUND_DEBOUNCE_MS"), 0, 0),
+        quick_comment_enabled=_as_bool(_pick(extra, env, "quick_comment_enabled", "NIM_QUICK_COMMENT_ENABLED"), default=False),
+        quick_comment_index=_as_int(_pick(extra, env, "quick_comment_index", "NIM_QUICK_COMMENT_INDEX"), 71, 1),
+        quick_comment_ttl_ms=_as_int(_pick(extra, env, "quick_comment_ttl_ms", "NIM_QUICK_COMMENT_TTL_MS"), 30000, 1000),
         legacy_login=_as_bool(_pick(extra, env, "legacy_login", "NIM_LEGACY_LOGIN"), default=False),
         antispam_enabled=_as_bool(_pick(extra, env, "antispam_enabled", "NIM_ANTISPAM_ENABLED"), default=True),
         debug=_as_bool(_pick(extra, env, "debug", "NIM_DEBUG"), default=False),

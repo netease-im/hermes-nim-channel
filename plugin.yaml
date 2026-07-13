@@ -88,6 +88,22 @@ optional_env:
     description: "Maximum characters per outbound text message chunk"
     prompt: "Text chunk limit"
     password: false
+  - name: NIM_INBOUND_DEBOUNCE_MS
+    description: "Inbound debounce window in milliseconds for batch metadata"
+    prompt: "Inbound debounce"
+    password: false
+  - name: NIM_QUICK_COMMENT_ENABLED
+    description: "Enable temporary processing quick comments"
+    prompt: "Quick comments"
+    password: false
+  - name: NIM_QUICK_COMMENT_INDEX
+    description: "Quick comment index used for processing marker"
+    prompt: "Quick comment index"
+    password: false
+  - name: NIM_QUICK_COMMENT_TTL_MS
+    description: "Milliseconds before quick comment cleanup"
+    prompt: "Quick comment TTL"
+    password: false
   - name: NIM_LEGACY_LOGIN
     description: "Use legacy NIM login mode instead of AI bot login"
     prompt: "Legacy login"

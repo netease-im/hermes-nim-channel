@@ -36,6 +36,12 @@ export function parseBridgeConfig(raw) {
     debug: Boolean(raw?.debug),
     mediaMaxMb: Number(raw?.media_max_mb ?? raw?.mediaMaxMb ?? 30),
     textChunkLimit: Number(raw?.text_chunk_limit ?? raw?.textChunkLimit ?? raw?.advanced?.textChunkLimit ?? 4000),
+    inboundDebounceMs: Number(raw?.inbound_debounce_ms ?? raw?.inboundDebounceMs ?? raw?.advanced?.inboundDebounceMs ?? 0),
+    quickComment: {
+      enabled: optionalBoolean(raw?.quick_comment?.enabled ?? raw?.quickComment?.enabled ?? raw?.quick_comment_enabled ?? raw?.quickCommentEnabled) ?? false,
+      index: Number(raw?.quick_comment?.index ?? raw?.quickComment?.index ?? raw?.quick_comment_index ?? raw?.quickCommentIndex ?? 71),
+      ttlMs: Number(raw?.quick_comment?.ttl_ms ?? raw?.quickComment?.ttlMs ?? raw?.quick_comment_ttl_ms ?? raw?.quickCommentTtlMs ?? 30000),
+    },
     legacyLogin: legacyLogin ?? false,
     antispamEnabled: antispamEnabled ?? true,
     homeChannel: raw?.home_channel ?? raw?.homeChannel ?? null,
@@ -368,6 +374,66 @@ export function normalizeTopicRefer(topicRefer) {
   };
 }
 
+export function normalizeTopicInfo(topic, fallbackRefer = null) {
+  if (!topic || typeof topic !== "object") {
+    return null;
+  }
+  const fallback = normalizeTopicRefer(fallbackRefer);
+  const topicId = Number(topic.topicId ?? fallback?.topicId);
+  const conversationId = String(topic.conversationId ?? fallback?.conversationId ?? "").trim();
+  const createTime = Number(topic.createTime ?? fallback?.createTime);
+  if (!Number.isFinite(topicId) || topicId <= 0 || !conversationId || !Number.isFinite(createTime) || createTime <= 0) {
+    return null;
+  }
+  const info = {
+    topicId,
+    conversationId,
+    createTime,
+  };
+  const topicName = String(topic.topicName ?? "").trim();
+  if (topicName) {
+    info.topicName = topicName;
+  }
+  for (const key of ["messageClientId", "messageServerId", "serverExtension"]) {
+    const value = String(topic[key] ?? "").trim();
+    if (value) {
+      info[key] = value;
+    }
+  }
+  for (const key of ["messageTime", "updateTime"]) {
+    const value = Number(topic[key]);
+    if (Number.isFinite(value) && value > 0) {
+      info[key] = value;
+    }
+  }
+  return info;
+}
+
+const topicInfoCache = new Map();
+
+export async function resolveTopicInfo(nim, topicRefer) {
+  const refer = normalizeTopicRefer(topicRefer);
+  if (!refer) {
+    return null;
+  }
+  const cacheKey = `${refer.conversationId}:${refer.topicId}:${refer.createTime}`;
+  if (topicInfoCache.has(cacheKey)) {
+    return topicInfoCache.get(cacheKey);
+  }
+  let topicInfo = null;
+  try {
+    const topicService = nim?.V2NIMTopicService;
+    if (typeof topicService?.getTopicByRefer === "function") {
+      topicInfo = normalizeTopicInfo(await topicService.getTopicByRefer(refer), refer);
+    }
+  } catch {
+    topicInfo = null;
+  }
+  const resolved = topicInfo ?? refer;
+  topicInfoCache.set(cacheKey, resolved);
+  return resolved;
+}
+
 export function resolveTopicReplyContext(nim, originalMessage) {
   const topic = normalizeTopicRefer(originalMessage?.topicRefer);
   const topicService = nim?.V2NIMTopicService;
@@ -378,6 +444,159 @@ export function resolveTopicReplyContext(nim, originalMessage) {
     topic,
     topicService,
   };
+}
+
+export function resolveQuickCommentIndex(value) {
+  const index = Number(value ?? 71);
+  return Number.isInteger(index) && index >= 1 ? index : 71;
+}
+
+export function deriveMessageRefer(message) {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+  const senderId = String(message.senderId ?? "").trim();
+  const receiverId = String(message.receiverId ?? "").trim();
+  const messageClientId = String(message.messageClientId ?? "").trim();
+  const messageServerId = String(message.messageServerId ?? "").trim();
+  const conversationId = String(message.conversationId ?? "").trim();
+  const createTime = Number(message.createTime);
+  const conversationType = Number(message.conversationType);
+  if (!senderId || !receiverId || !messageClientId || !messageServerId || !conversationId || !Number.isFinite(createTime) || !Number.isFinite(conversationType)) {
+    return null;
+  }
+  return {
+    senderId,
+    receiverId,
+    messageClientId,
+    messageServerId,
+    createTime,
+    conversationType,
+    conversationId,
+  };
+}
+
+export function addBatchMetadata(payload, { batchId, batchKey, batchIndex, batchSize } = {}) {
+  if (!batchId || !batchKey || !Number.isFinite(Number(batchIndex)) || !Number.isFinite(Number(batchSize))) {
+    return payload;
+  }
+  return {
+    ...payload,
+    batch_id: batchId,
+    batch_key: batchKey,
+    batch_index: Number(batchIndex),
+    batch_size: Number(batchSize),
+  };
+}
+
+export function inboundBatchKey(payload) {
+  const sessionType = String(payload?.session_type ?? "p2p");
+  if (sessionType === "p2p") {
+    return `p2p:${String(payload?.sender_id ?? payload?.target_id ?? "unknown")}`;
+  }
+  if (sessionType === "qchat") {
+    return `qchat:${String(payload?.target_id ?? "unknown")}`;
+  }
+  return `${sessionType}:${String(payload?.target_id ?? payload?.sender_id ?? "unknown")}`;
+}
+
+export class InboundBatchEmitter {
+  constructor({ debounceMs = 0, emitBatch }) {
+    this.debounceMs = Math.max(0, Number(debounceMs) || 0);
+    this.emitBatch = emitBatch;
+    this.buffers = new Map();
+    this.nextSeq = 0;
+  }
+
+  enqueue(batchKey, item) {
+    if (this.debounceMs <= 0) {
+      this.nextSeq += 1;
+      void this.emitBatch([item], batchKey, `${batchKey}:${Date.now()}:${this.nextSeq}`);
+      return;
+    }
+    const existing = this.buffers.get(batchKey);
+    if (existing) {
+      existing.items.push(item);
+      clearTimeout(existing.timeout);
+      existing.timeout = this.schedule(batchKey, existing);
+      return;
+    }
+    this.nextSeq += 1;
+    const buffer = {
+      batchId: `${batchKey}:${Date.now()}:${this.nextSeq}`,
+      items: [item],
+      timeout: null,
+    };
+    buffer.timeout = this.schedule(batchKey, buffer);
+    this.buffers.set(batchKey, buffer);
+  }
+
+  schedule(batchKey, buffer) {
+    const timeout = setTimeout(() => {
+      this.flush(batchKey, buffer);
+    }, this.debounceMs);
+    timeout.unref?.();
+    return timeout;
+  }
+
+  flush(batchKey, buffer) {
+    if (this.buffers.get(batchKey) !== buffer) {
+      return;
+    }
+    this.buffers.delete(batchKey);
+    clearTimeout(buffer.timeout);
+    void this.emitBatch(buffer.items, batchKey, buffer.batchId);
+  }
+
+  stop() {
+    for (const [batchKey, buffer] of this.buffers) {
+      this.flush(batchKey, buffer);
+    }
+  }
+}
+
+export async function addProcessingQuickComment({ nim, message, config, setTimer = setTimeout, trackCleanup = null, log = console.warn }) {
+  const quickConfig = config?.quickComment ?? {};
+  if (!quickConfig.enabled) {
+    return null;
+  }
+  const messageService = nim?.V2NIMMessageService;
+  if (typeof messageService?.addQuickComment !== "function") {
+    return null;
+  }
+  const messageRefer = deriveMessageRefer(message);
+  if (!messageRefer) {
+    return null;
+  }
+  const index = resolveQuickCommentIndex(quickConfig.index);
+  try {
+    await messageService.addQuickComment(message, index, undefined, {
+      pushEnabled: false,
+      needBadge: false,
+    });
+    const ttlMs = Math.max(1000, Number(quickConfig.ttlMs) || 30000);
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) {
+        return Promise.resolve();
+      }
+      cleaned = true;
+      return Promise.resolve(messageService.removeQuickComment?.(messageRefer, index)).catch((error) => {
+        log(`[nim] quick comment cleanup failed — error: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    };
+    const timeout = setTimer(cleanup, ttlMs);
+    timeout?.unref?.();
+    trackCleanup?.({ timeout, cleanup });
+    return {
+      index,
+      message_id: String(message?.messageServerId ?? message?.messageClientId ?? ""),
+      cleanup_ttl_ms: ttlMs,
+    };
+  } catch (error) {
+    log(`[nim] quick comment add failed — error: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 
 export async function sendTextReplyMessage({ nim, messageService, message, originalMessage, options }) {
@@ -412,6 +631,56 @@ export async function sendMediaMaybeTopicReply({ nim, message, originalMessage, 
   return {
     usedTopicReply: false,
     result: await sendOrdinary(),
+  };
+}
+
+export function createStreamChunkParams({ text = "", chunkIndex = 0, isComplete = true } = {}) {
+  const index = Number(chunkIndex);
+  return {
+    text: String(text ?? ""),
+    index: Number.isFinite(index) ? index : 0,
+    finish: isComplete ? 1 : 0,
+  };
+}
+
+export async function sendStreamTextMessage({ messageService, message, conversationId, originalMessage, options, streamChunkParams, sendOrdinary }) {
+  if (originalMessage && typeof messageService?.replyStreamMessage === "function") {
+    return {
+      mode: "reply_stream",
+      result: await messageService.replyStreamMessage(
+        message,
+        originalMessage,
+        options,
+        streamChunkParams,
+      ),
+    };
+  }
+  if (typeof messageService?.sendStreamMessage === "function") {
+    return {
+      mode: "stream",
+      result: await messageService.sendStreamMessage(
+        message,
+        conversationId,
+        options,
+        streamChunkParams,
+      ),
+    };
+  }
+  return {
+    mode: "fallback",
+    result: await sendOrdinary(),
+  };
+}
+
+export async function sendEditReplacementMessage({ messageCreator, text, messageId = "", sendCreated }) {
+  const message = messageCreator?.createTextMessage?.(String(text ?? ""));
+  if (!message) {
+    throw new Error("failed to create edit replacement message");
+  }
+  const result = await sendCreated(message);
+  return {
+    ...result,
+    edited_message_id: String(messageId ?? ""),
   };
 }
 
@@ -515,6 +784,10 @@ export async function toInboundMessage(message, botAccount, nim = null) {
       ? await resolveTeamName(nim, targetId, parsed.sessionType)
       : null;
 
+  const topicRefer = normalizeTopicRefer(message?.topicRefer);
+  const topicInfo = topicRefer ? await resolveTopicInfo(nim, topicRefer) : null;
+  const topicName = String(topicInfo?.topicName ?? "").trim() || null;
+
   return {
     message_id: String(message?.messageServerId ?? message?.messageClientId ?? ""),
     client_message_id: String(message?.messageClientId ?? ""),
@@ -529,7 +802,9 @@ export async function toInboundMessage(message, botAccount, nim = null) {
     force_push_account_ids: pushIds,
     mentioned,
     mention_all: false,
-    topic_refer: normalizeTopicRefer(message?.topicRefer),
+    topic_refer: topicRefer,
+    topic_info: topicInfo,
+    topic_name: topicName,
     thread_reply: message?.threadReply ?? null,
     from_self: String(message?.senderId ?? "") === String(botAccount ?? ""),
     raw: message,

@@ -144,6 +144,52 @@ class NodeBridgeProcess:
             raise BridgeError(response.get("error", "send_media failed"))
         return dict(response.get("result") or {})
 
+    async def send_stream_text(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        session_type: str,
+        chunk_index: int = 0,
+        is_complete: bool = True,
+        reply_to: str | None = None,
+    ) -> dict[str, Any]:
+        response = await self.request(
+            "send_stream_message",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "session_type": session_type,
+                "chunk_index": chunk_index,
+                "is_complete": is_complete,
+                "reply_to": reply_to,
+            },
+        )
+        if response.get("status") != "ok":
+            raise BridgeError(response.get("error", "send_stream_message failed"))
+        return dict(response.get("result") or {})
+
+    async def edit_message(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        session_type: str,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        response = await self.request(
+            "edit_message",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "session_type": session_type,
+                "message_id": message_id,
+            },
+        )
+        if response.get("status") != "ok":
+            raise BridgeError(response.get("error", "edit_message failed"))
+        return dict(response.get("result") or {})
+
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         process = self._process
         if process is None or process.stdin is None:

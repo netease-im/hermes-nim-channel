@@ -3,16 +3,27 @@ import assert from "node:assert/strict";
 
 import {
   buildNimConstructorOptions,
+  addBatchMetadata,
+  addProcessingQuickComment,
   isP2pApplicantAllowed,
   collectReadReceiptBatches,
+  createStreamChunkParams,
+  deriveMessageRefer,
+  InboundBatchEmitter,
+  inboundBatchKey,
   normalizeTarget,
   normalizeConnectionStatus,
+  normalizeTopicInfo,
   normalizeTopicRefer,
   parseBridgeConfig,
   ReplyMessageCache,
+  resolveQuickCommentIndex,
+  resolveTopicInfo,
   resolveTopicReplyContext,
   resolveTeamName,
+  sendEditReplacementMessage,
   sendMediaMaybeTopicReply,
+  sendStreamTextMessage,
   sendTextReplyMessage,
   splitMessageIntoChunks,
   toInboundMessage,
@@ -54,6 +65,24 @@ test("config parser accepts text chunk limit", () => {
   assert.equal(parsed.textChunkLimit, 1234);
   assert.equal(parsed.legacyLogin, true);
   assert.equal(parsed.antispamEnabled, false);
+});
+
+test("config parser accepts inbound batching and quick comment controls", () => {
+  const parsed = parseBridgeConfig({
+    nim_token: "app|bot|secret",
+    inbound_debounce_ms: 250,
+    quick_comment: {
+      enabled: "true",
+      index: 72,
+      ttl_ms: 5000,
+    },
+  });
+  assert.equal(parsed.inboundDebounceMs, 250);
+  assert.deepEqual(parsed.quickComment, {
+    enabled: true,
+    index: 72,
+    ttlMs: 5000,
+  });
 });
 
 test("private deployment config builds SDK constructor options", () => {
@@ -348,11 +377,234 @@ test("inbound conversion preserves thread and topic metadata", async () => {
   });
 });
 
+test("inbound conversion enriches topic info when sdk can resolve it", async () => {
+  const nim = {
+    V2NIMTopicService: {
+      async getTopicByRefer(refer) {
+        return {
+          ...refer,
+          topicName: "Incident Review",
+          messageClientId: "topic-root",
+        };
+      },
+    },
+  };
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|1|alice",
+      senderId: "alice",
+      receiverId: "bot",
+      messageType: 0,
+      messageClientId: "client-topic-info",
+      text: "topic hello",
+      topicRefer: {
+        topicId: 43,
+        conversationId: "0|1|alice",
+        createTime: 123457,
+      },
+    },
+    "bot",
+    nim,
+  );
+  assert.equal(payload.topic_name, "Incident Review");
+  assert.deepEqual(payload.topic_info, {
+    topicId: 43,
+    conversationId: "0|1|alice",
+    createTime: 123457,
+    topicName: "Incident Review",
+    messageClientId: "topic-root",
+  });
+});
+
 test("topic refer normalization rejects incomplete values", () => {
   assert.equal(normalizeTopicRefer(null), null);
   assert.equal(normalizeTopicRefer({ topicId: 0, conversationId: "0|1|a", createTime: 1 }), null);
   assert.equal(normalizeTopicRefer({ topicId: 1, conversationId: "", createTime: 1 }), null);
   assert.equal(normalizeTopicRefer({ topicId: 1, conversationId: "0|1|a", createTime: 0 }), null);
+});
+
+test("topic info normalization and resolver fall back to refer", async () => {
+  assert.equal(normalizeTopicInfo({ topicId: 0 }), null);
+  assert.deepEqual(
+    normalizeTopicInfo(
+      {
+        topicName: "Topic Name",
+      },
+      {
+        topicId: 11,
+        conversationId: "0|1|alice",
+        createTime: 222,
+      },
+    ),
+    {
+      topicId: 11,
+      conversationId: "0|1|alice",
+      createTime: 222,
+      topicName: "Topic Name",
+    },
+  );
+  const resolved = await resolveTopicInfo({}, {
+    topicId: 12,
+    conversationId: "0|1|alice",
+    createTime: 333,
+  });
+  assert.deepEqual(resolved, {
+    topicId: 12,
+    conversationId: "0|1|alice",
+    createTime: 333,
+  });
+});
+
+test("batch metadata helper annotates payloads", () => {
+  assert.deepEqual(
+    addBatchMetadata(
+      { text: "hello" },
+      {
+        batchId: "batch-1",
+        batchKey: "p2p:alice",
+        batchIndex: 1,
+        batchSize: 2,
+      },
+    ),
+    {
+      text: "hello",
+      batch_id: "batch-1",
+      batch_key: "p2p:alice",
+      batch_index: 1,
+      batch_size: 2,
+    },
+  );
+});
+
+test("inbound batch emitter groups same-key messages and preserves order", async () => {
+  const emitted = [];
+  const batcher = new InboundBatchEmitter({
+    debounceMs: 1000,
+    emitBatch: async (items, batchKey, batchId) => {
+      emitted.push({ items, batchKey, batchId });
+    },
+  });
+  batcher.enqueue("p2p:alice", { id: "a" });
+  batcher.enqueue("p2p:alice", { id: "b" });
+  batcher.enqueue("p2p:bob", { id: "c" });
+  assert.equal(emitted.length, 0);
+  batcher.stop();
+  assert.equal(emitted.length, 2);
+  assert.deepEqual(emitted[0].items.map((item) => item.id), ["a", "b"]);
+  assert.equal(emitted[0].batchKey, "p2p:alice");
+  assert.equal(emitted[1].batchKey, "p2p:bob");
+  assert.notEqual(emitted[0].batchId, emitted[1].batchId);
+});
+
+test("inbound batch key separates p2p senders", () => {
+  assert.equal(
+    inboundBatchKey({
+      session_type: "p2p",
+      sender_id: "alice",
+      target_id: "bot",
+    }),
+    "p2p:alice",
+  );
+  assert.equal(
+    inboundBatchKey({
+      session_type: "p2p",
+      sender_id: "bob",
+      target_id: "bot",
+    }),
+    "p2p:bob",
+  );
+  assert.equal(
+    inboundBatchKey({
+      session_type: "team",
+      sender_id: "alice",
+      target_id: "team-1",
+    }),
+    "team:team-1",
+  );
+});
+
+test("quick comment helpers normalize index and derive message refer", () => {
+  assert.equal(resolveQuickCommentIndex("72"), 72);
+  assert.equal(resolveQuickCommentIndex("bad"), 71);
+  assert.deepEqual(
+    deriveMessageRefer({
+      senderId: "alice",
+      receiverId: "bot",
+      messageClientId: "client-1",
+      messageServerId: "server-1",
+      conversationId: "0|1|alice",
+      createTime: 123,
+      conversationType: 1,
+    }),
+    {
+      senderId: "alice",
+      receiverId: "bot",
+      messageClientId: "client-1",
+      messageServerId: "server-1",
+      conversationId: "0|1|alice",
+      createTime: 123,
+      conversationType: 1,
+    },
+  );
+  assert.equal(deriveMessageRefer({ senderId: "alice" }), null);
+});
+
+test("quick comment helper adds metadata and schedules cleanup", async () => {
+  const calls = [];
+  let scheduled = null;
+  const tracked = [];
+  const message = {
+    senderId: "alice",
+    receiverId: "bot",
+    messageClientId: "client-1",
+    messageServerId: "server-1",
+    conversationId: "0|1|alice",
+    createTime: 123,
+    conversationType: 1,
+  };
+  const nim = {
+    V2NIMMessageService: {
+      async addQuickComment(...args) {
+        calls.push(["add", ...args]);
+      },
+      async removeQuickComment(...args) {
+        calls.push(["remove", ...args]);
+      },
+    },
+  };
+  const quickComment = await addProcessingQuickComment({
+    nim,
+    message,
+    config: {
+      quickComment: {
+        enabled: true,
+        index: 72,
+        ttlMs: 5000,
+      },
+    },
+    setTimer(callback, ttlMs) {
+      scheduled = { callback, ttlMs };
+      return { unref() {} };
+    },
+    trackCleanup(cleanup) {
+      tracked.push(cleanup);
+    },
+  });
+  assert.deepEqual(quickComment, {
+    index: 72,
+    message_id: "server-1",
+    cleanup_ttl_ms: 5000,
+  });
+  assert.equal(calls[0][0], "add");
+  assert.equal(calls[0][1], message);
+  assert.equal(calls[0][2], 72);
+  assert.deepEqual(calls[0][4], { pushEnabled: false, needBadge: false });
+  assert.equal(scheduled.ttlMs, 5000);
+  assert.equal(tracked.length, 1);
+  assert.equal(tracked[0].timeout.unref instanceof Function, true);
+  await scheduled.callback();
+  assert.equal(calls[1][0], "remove");
+  assert.equal(calls[1][2], 72);
 });
 
 test("topic reply context requires topic service and valid topic refer", () => {
@@ -552,6 +804,105 @@ test("media sender falls back to ordinary send when topic context is unavailable
     client_message_id: "client-media",
   });
   assert.equal(ordinaryCalls, 1);
+});
+
+test("stream sender selects reply stream stream and fallback modes", async () => {
+  const message = { messageClientId: "stream-client" };
+  const originalMessage = { messageClientId: "original-client" };
+  const streamChunkParams = createStreamChunkParams({
+    text: "chunk",
+    chunkIndex: 2,
+    isComplete: false,
+  });
+  assert.deepEqual(streamChunkParams, {
+    text: "chunk",
+    index: 2,
+    finish: 0,
+  });
+
+  const replyCalls = [];
+  const replySent = await sendStreamTextMessage({
+    messageService: {
+      async replyStreamMessage(...args) {
+        replyCalls.push(args);
+        return { messageServerId: "reply-stream-server" };
+      },
+    },
+    message,
+    conversationId: "0|1|alice",
+    originalMessage,
+    options: { antispamConfig: { antispamEnabled: true } },
+    streamChunkParams,
+    async sendOrdinary() {
+      throw new Error("ordinary send should not be called");
+    },
+  });
+  assert.equal(replySent.mode, "reply_stream");
+  assert.equal(replySent.result.messageServerId, "reply-stream-server");
+  assert.deepEqual(replyCalls[0], [
+    message,
+    originalMessage,
+    { antispamConfig: { antispamEnabled: true } },
+    streamChunkParams,
+  ]);
+
+  const streamCalls = [];
+  const streamSent = await sendStreamTextMessage({
+    messageService: {
+      async sendStreamMessage(...args) {
+        streamCalls.push(args);
+        return { messageServerId: "stream-server" };
+      },
+    },
+    message,
+    conversationId: "0|1|alice",
+    originalMessage: null,
+    options: {},
+    streamChunkParams,
+    async sendOrdinary() {
+      throw new Error("ordinary send should not be called");
+    },
+  });
+  assert.equal(streamSent.mode, "stream");
+  assert.equal(streamCalls[0][1], "0|1|alice");
+
+  const fallbackSent = await sendStreamTextMessage({
+    messageService: {},
+    message,
+    conversationId: "0|1|alice",
+    originalMessage: null,
+    options: {},
+    streamChunkParams,
+    async sendOrdinary() {
+      return { message_id: "fallback-server" };
+    },
+  });
+  assert.deepEqual(fallbackSent, {
+    mode: "fallback",
+    result: { message_id: "fallback-server" },
+  });
+});
+
+test("edit facade creates replacement text message", async () => {
+  const created = [];
+  const response = await sendEditReplacementMessage({
+    messageCreator: {
+      createTextMessage(text) {
+        return { text, messageClientId: "edit-client" };
+      },
+    },
+    text: "replacement",
+    messageId: "old-message",
+    async sendCreated(message) {
+      created.push(message);
+      return { message_id: "new-message" };
+    },
+  });
+  assert.deepEqual(created, [{ text: "replacement", messageClientId: "edit-client" }]);
+  assert.deepEqual(response, {
+    message_id: "new-message",
+    edited_message_id: "old-message",
+  });
 });
 
 test("team name resolver falls back to team id", async () => {

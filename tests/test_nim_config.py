@@ -54,6 +54,10 @@ class NimConfigTests(unittest.TestCase):
                 "NIM_QCHAT_POLICY": "allowlist",
                 "NIM_QCHAT_ALLOW_FROM": "server-a|channel-a,server-b",
                 "NIM_TEXT_CHUNK_LIMIT": "1234",
+                "NIM_INBOUND_DEBOUNCE_MS": "250",
+                "NIM_QUICK_COMMENT_ENABLED": "true",
+                "NIM_QUICK_COMMENT_INDEX": "72",
+                "NIM_QUICK_COMMENT_TTL_MS": "5000",
                 "NIM_LEGACY_LOGIN": "true",
                 "NIM_ANTISPAM_ENABLED": "false",
             },
@@ -67,8 +71,14 @@ class NimConfigTests(unittest.TestCase):
         self.assertEqual("allowlist", resolved.qchat_policy)
         self.assertEqual(["server-a|channel-a", "server-b"], resolved.qchat_allow_from)
         self.assertEqual(1234, resolved.text_chunk_limit)
+        self.assertEqual(250, resolved.inbound_debounce_ms)
+        self.assertTrue(resolved.quick_comment_enabled)
+        self.assertEqual(72, resolved.quick_comment_index)
+        self.assertEqual(5000, resolved.quick_comment_ttl_ms)
         payload = resolved.to_bridge_payload()
         self.assertEqual(1234, payload["text_chunk_limit"])
+        self.assertEqual(250, payload["inbound_debounce_ms"])
+        self.assertEqual({"enabled": True, "index": 72, "ttl_ms": 5000}, payload["quick_comment"])
         self.assertTrue(payload["legacy_login"])
         self.assertFalse(payload["antispam_enabled"])
 
@@ -84,6 +94,21 @@ class NimConfigTests(unittest.TestCase):
         )
         assert resolved.credentials is not None
         self.assertEqual(["server-x|channel-y"], resolved.qchat_allow_from)
+
+    def test_optional_numeric_config_falls_back_or_clamps_invalid_values(self) -> None:
+        resolved = load_nim_config(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            {
+                "NIM_TEXT_CHUNK_LIMIT": "bad",
+                "NIM_INBOUND_DEBOUNCE_MS": "-20",
+                "NIM_QUICK_COMMENT_INDEX": "0",
+                "NIM_QUICK_COMMENT_TTL_MS": "30s",
+            },
+        )
+        self.assertEqual(4000, resolved.text_chunk_limit)
+        self.assertEqual(0, resolved.inbound_debounce_ms)
+        self.assertEqual(1, resolved.quick_comment_index)
+        self.assertEqual(30000, resolved.quick_comment_ttl_ms)
 
     def test_explicit_p2p_policy_overrides_legacy_direct_allowlist(self) -> None:
         resolved = load_nim_config(

@@ -76,6 +76,10 @@ Additional controls:
 - `NIM_NOS_ACCELERATE`: private NOS accelerate URL format
 - `NIM_NOS_ACCELERATE_HOST`: private NOS accelerate host
 - `NIM_TEXT_CHUNK_LIMIT`: maximum characters per outbound text message chunk; defaults to `4000`
+- `NIM_INBOUND_DEBOUNCE_MS`: optional inbound debounce window used to attach batch metadata; defaults to `0`
+- `NIM_QUICK_COMMENT_ENABLED`: add temporary processing quick comments when supported; defaults to `false`
+- `NIM_QUICK_COMMENT_INDEX`: quick comment index used as the processing marker; defaults to `71`
+- `NIM_QUICK_COMMENT_TTL_MS`: cleanup delay for processing quick comments; defaults to `30000`
 - `NIM_LEGACY_LOGIN`: use `aiBot: 0` legacy login when `true`; defaults to `false`
 - `NIM_ANTISPAM_ENABLED`: include SDK antispam send config; defaults to `true`
 - `NIM_HOME_CHANNEL`: default NIM target for proactive sends
