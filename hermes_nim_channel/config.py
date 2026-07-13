@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import os
+from pathlib import Path
 import shlex
 import shutil
 from typing import Any
@@ -98,7 +99,8 @@ def _default_bridge_command() -> list[str]:
     installed = shutil.which("hermes-nim-bridge")
     if installed:
         return [installed]
-    return ["node", "bridge/index.mjs"]
+    bridge_script = Path(__file__).resolve().parent.parent / "bridge" / "index.mjs"
+    return ["node", str(bridge_script)]
 
 
 def _resolve_bridge_command(value: Any) -> list[str]:

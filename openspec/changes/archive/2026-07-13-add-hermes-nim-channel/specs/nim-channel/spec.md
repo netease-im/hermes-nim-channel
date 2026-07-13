@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Hermes Plugin Layout
+The system SHALL expose the NIM integration as a Hermes platform plugin with root entrypoint files and an internal implementation package that does not shadow Hermes core modules.
+
+#### Scenario: Plugin entrypoint is discoverable
+- **WHEN** Hermes loads the plugin directory
+- **THEN** it finds `plugin.yaml`, `adapter.py`, and `__init__.py`
+- **AND** the plugin registers a `nim` platform adapter without requiring copied files inside Hermes core
+
+#### Scenario: Internal package avoids core-module collisions
+- **WHEN** the plugin is imported inside a Hermes runtime
+- **THEN** local implementation modules resolve from `hermes_nim_channel`
+- **AND** the plugin does not rely on a top-level local package named `gateway`
+
 ### Requirement: NIM Adapter Configuration
 The system SHALL expose a `nim` platform adapter configuration that resolves credentials from either a shorthand token or discrete App Key, account, and token fields.
 
@@ -80,3 +93,10 @@ The system SHALL exchange JSON line messages between Python and Node so that req
 - **WHEN** the bridge receives a NIM message from the SDK
 - **THEN** it emits a JSONL `event` message whose payload contains sender, target, session type, text, and mention metadata
 
+### Requirement: Reference Capability Baseline
+The system SHALL treat `openclaw-nim-channel` as the NIM feature baseline for future Hermes-side capability work.
+
+#### Scenario: Capability expansion starts from the reference implementation
+- **WHEN** a developer adds a new NIM behavior beyond the current prototype surface
+- **THEN** they use the corresponding `openclaw-nim-channel` behavior as the first implementation reference
+- **AND** they adapt only the host-specific integration points required by Hermes

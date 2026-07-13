@@ -6,8 +6,8 @@ from pathlib import Path
 import sys
 from typing import Any, Awaitable, Callable
 
-from gateway.config import NimResolvedConfig
-from gateway.platforms.nim_protocol import decode_jsonl_line, encode_jsonl
+from hermes_nim_channel.config import NimResolvedConfig
+from hermes_nim_channel.platforms.nim_protocol import decode_jsonl_line, encode_jsonl
 
 
 BridgeEventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -147,4 +147,3 @@ class NodeBridgeProcess:
             if not line:
                 return
             sys.stderr.write(line.decode("utf-8", errors="replace"))
-

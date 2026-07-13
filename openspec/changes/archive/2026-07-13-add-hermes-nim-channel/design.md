@@ -1,15 +1,16 @@
 ## Context
 
-Hermes expects new messaging platforms to be implemented as gateway adapters, while the existing NIM reference implementation inside NetEase is based on the official Node SDK. The current repository starts empty, so the implementation must provide both the behavioral spec and a minimal, testable adapter skeleton that can later be wired into Hermes core.
+Hermes recommends shipping third-party messaging integrations as plugins. At the same time, the NIM behavior we want already exists in `openclaw-nim-channel`, which is implemented against a different host API. This repository therefore needs a plugin-compatible layout for Hermes, while keeping the Python/Node split that matches the available NIM SDK.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Provide a Hermes-compatible `nim` adapter entry point
+- Provide a Hermes-compatible `nim` plugin entry point
 - Resolve credentials and policy controls from Hermes-style config and environment variables
 - Keep direct SDK calls inside a dedicated Node bridge
 - Support inbound direct messages, mention-gated team messages, and outbound text sends
 - Make bridge failures observable through a structured JSONL protocol
+- Establish `openclaw-nim-channel` as the implementation baseline for later parity work
 
 **Non-Goals:**
 - Rebuild the full Hermes core repository inside this project
@@ -30,16 +31,17 @@ Rationale:
 Alternative considered:
 - Pure Python NIM client: rejected because no maintained equivalent to `@yxim/nim-bot` is available in this workflow.
 
-### 2. Keep Hermes compatibility at the file-path level
+### 2. Use Hermes plugin entrypoints and an internal package
 
-Decision: place the adapter in `gateway/platforms/nim.py` and keep small compatibility types in `gateway/platforms/base.py`.
+Decision: expose the plugin at the repository root with `plugin.yaml`, `adapter.py`, and `__init__.py`, while keeping testable local code under `hermes_nim_channel/`.
 
 Rationale:
-- The file layout matches Hermes documentation and lowers the cost of upstreaming later.
-- A local compatibility base lets the repository stay testable without vendoring the whole Hermes source tree.
+- The layout matches Hermes' documented plugin path.
+- A private package name avoids collisions with Hermes core modules such as `gateway`.
+- Local compatibility helpers keep the repository testable without vendoring the full Hermes source tree.
 
 Alternative considered:
-- Build an unrelated Python package layout: rejected because it would drift further from the documented Hermes integration points.
+- Keep a top-level local `gateway/` package: rejected because it can shadow Hermes core imports when the plugin is loaded.
 
 ### 3. Conservative group-chat behavior
 
@@ -68,12 +70,11 @@ Rationale:
 
 1. Configure NIM credentials in Hermes platform config or environment variables.
 2. Install bridge dependencies with `npm install` inside `bridge/`.
-3. Register or vendor `gateway/platforms/nim.py` into the Hermes gateway.
+3. Install or copy the plugin directory into Hermes' plugin path.
 4. Start Hermes and validate DM plus mention-gated team flows.
 5. If rollout fails, disable the `nim` platform and stop the bridge process; no persistent migration is required.
 
 ## Open Questions
 
-- How Hermes core should register an external adapter package without copying files into `gateway/platforms/`
+- How Hermes capability concepts should map to the broader `openclaw-nim-channel` surface, especially QChat and media behavior
 - Whether future iterations should expose media uploads through the same bridge protocol or a separate transfer helper
-

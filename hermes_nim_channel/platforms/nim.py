@@ -3,9 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from gateway.config import NimResolvedConfig, Platform, PlatformConfig, load_nim_config
-from gateway.platforms.base import BasePlatformAdapter, ChatType, MessageEvent, MessageSource, MessageType, SendResult
-from gateway.platforms.nim_bridge import NodeBridgeProcess
+from hermes_nim_channel.config import NimResolvedConfig, Platform, PlatformConfig, load_nim_config
+from hermes_nim_channel.platforms.base import (
+    BasePlatformAdapter,
+    ChatType,
+    MessageEvent,
+    MessageSource,
+    MessageType,
+    SendResult,
+)
+from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
 
 
 @dataclass(slots=True)
@@ -156,4 +163,3 @@ class NimAdapter(BasePlatformAdapter):
 
 
 PlatformAdapter = NimAdapter
-

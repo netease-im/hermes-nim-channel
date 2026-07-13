@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from unittest import mock
 
-from gateway.config import PlatformConfig, _resolve_bridge_command, load_nim_config, parse_nim_token
+from hermes_nim_channel.config import (
+    PlatformConfig,
+    _resolve_bridge_command,
+    load_nim_config,
+    parse_nim_token,
+)
 
 
 class NimConfigTests(unittest.TestCase):
@@ -53,12 +59,17 @@ class NimConfigTests(unittest.TestCase):
         self.assertEqual("open", resolved.group_policy)
 
     def test_bridge_command_prefers_installed_binary(self) -> None:
-        with mock.patch("gateway.config.shutil.which", return_value="/usr/local/bin/hermes-nim-bridge"):
+        with mock.patch("hermes_nim_channel.config.shutil.which", return_value="/usr/local/bin/hermes-nim-bridge"):
             self.assertEqual(["/usr/local/bin/hermes-nim-bridge"], _resolve_bridge_command(None))
 
     def test_bridge_command_falls_back_to_repo_script(self) -> None:
-        with mock.patch("gateway.config.shutil.which", return_value=None):
-            self.assertEqual(["node", "bridge/index.mjs"], _resolve_bridge_command(None))
+        with mock.patch("hermes_nim_channel.config.shutil.which", return_value=None):
+            command = _resolve_bridge_command(None)
+        self.assertEqual("node", command[0])
+        self.assertEqual(
+            str(Path(__file__).resolve().parent.parent / "bridge" / "index.mjs"),
+            command[1],
+        )
 
 
 if __name__ == "__main__":

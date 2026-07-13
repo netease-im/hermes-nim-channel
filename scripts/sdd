@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$ROOT_DIR"
+
+if ! command -v openspec >/dev/null 2>&1; then
+  echo "openspec CLI is required but was not found in PATH." >&2
+  exit 1
+fi
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./scripts/sdd help
+  ./scripts/sdd new <change-name>
+  ./scripts/sdd list
+  ./scripts/sdd status <change-name>
+  ./scripts/sdd show <change-name>
+  ./scripts/sdd validate [change-name]
+  ./scripts/sdd archive <change-name>
+  ./scripts/sdd instructions <proposal|specs|design|tasks> <change-name>
+  ./scripts/sdd templates
+  ./scripts/sdd workflow
+
+Examples:
+  ./scripts/sdd new add-qchat-support
+  ./scripts/sdd instructions proposal add-qchat-support
+  ./scripts/sdd status add-qchat-support
+  ./scripts/sdd validate add-qchat-support
+EOF
+}
+
+workflow() {
+  cat <<'EOF'
+SDD workflow:
+  1. Create a change:        ./scripts/sdd new <change-name>
+  2. Draft proposal:         ./scripts/sdd instructions proposal <change-name>
+  3. Draft specs:            ./scripts/sdd instructions specs <change-name>
+  4. Draft design:           ./scripts/sdd instructions design <change-name>
+  5. Draft tasks:            ./scripts/sdd instructions tasks <change-name>
+  6. Validate artifacts:     ./scripts/sdd validate <change-name>
+  7. Implement from tasks and keep checkboxes updated
+  8. Archive after delivery: ./scripts/sdd archive <change-name>
+EOF
+}
+
+command_name="${1:-help}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$command_name" in
+  help|-h|--help)
+    usage
+    ;;
+  workflow)
+    workflow
+    ;;
+  new)
+    change_name="${1:?change name is required}"
+    openspec new change "$change_name"
+    ;;
+  list)
+    openspec list
+    ;;
+  status)
+    change_name="${1:?change name is required}"
+    openspec status --change "$change_name"
+    ;;
+  show)
+    change_name="${1:?change name is required}"
+    openspec show "$change_name" --type change --no-interactive
+    ;;
+  validate)
+    if [[ $# -gt 0 ]]; then
+      openspec validate "$1" --type change --no-interactive
+    else
+      openspec validate --no-interactive
+    fi
+    ;;
+  archive)
+    change_name="${1:?change name is required}"
+    openspec archive "$change_name" --yes
+    ;;
+  instructions)
+    artifact="${1:?artifact is required}"
+    change_name="${2:?change name is required}"
+    openspec instructions "$artifact" --change "$change_name"
+    ;;
+  templates)
+    openspec templates
+    ;;
+  *)
+    echo "Unknown command: $command_name" >&2
+    echo >&2
+    usage >&2
+    exit 1
+    ;;
+esac

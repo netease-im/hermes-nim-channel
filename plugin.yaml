@@ -1,0 +1,50 @@
+name: hermes-nim-channel
+label: NIM
+kind: platform
+version: 0.2.0
+description: >
+  Hermes Agent platform plugin for NetEase IM (NIM, 网易云信).
+  Uses a Python adapter plus a Node bridge backed by @yxim/nim-bot.
+author: Xumengxiang
+requires_env:
+  - name: NIM_CREDENTIALS
+    description: "NIM credentials in appKey|accid|token format"
+    prompt: "NIM credentials"
+    password: true
+optional_env:
+  - name: NIM_APP_KEY
+    description: "NIM App Key when not using NIM_CREDENTIALS"
+    prompt: "NIM App Key"
+    password: false
+  - name: NIM_ACCOUNT
+    description: "NIM account when not using NIM_CREDENTIALS"
+    prompt: "NIM account"
+    password: false
+  - name: NIM_TOKEN
+    description: "NIM token when not using NIM_CREDENTIALS"
+    prompt: "NIM token"
+    password: true
+  - name: NIM_ALLOWED_USERS
+    description: "Comma-separated direct-message allowlist"
+    prompt: "Allowed users"
+    password: false
+  - name: NIM_ALLOW_ALL_USERS
+    description: "Allow all direct-message senders"
+    prompt: "Allow all users"
+    password: false
+  - name: NIM_GROUP_POLICY
+    description: "Team message policy: open, allowlist, or disabled"
+    prompt: "Team policy"
+    password: false
+  - name: NIM_GROUP_ALLOWLIST
+    description: "Comma-separated allowed team IDs"
+    prompt: "Allowed team IDs"
+    password: false
+  - name: NIM_HOME_CHANNEL
+    description: "Default NIM target for proactive delivery"
+    prompt: "Home channel"
+    password: false
+  - name: NIM_BRIDGE_COMMAND
+    description: "Override the bridge command"
+    prompt: "Bridge command"
+    password: false

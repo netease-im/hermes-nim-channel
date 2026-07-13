@@ -1,20 +1,29 @@
 # Hermes NIM Channel
 
-Hermes NIM Channel is a spec-driven prototype for integrating NetEase IM (NIM, 网易云信) into Hermes Agent as a new messaging platform.
+`hermes-nim-channel` is a standalone Hermes Agent platform plugin project for NetEase IM (NIM, 网易云信). Its purpose is to let `hermes-agent` send and receive messages through the official NIM Bot SDK.
 
-The repository follows a two-layer design:
+This repository uses `openclaw-nim-channel` as its NIM behavior baseline:
 
-- `gateway/platforms/nim.py`: a Hermes-compatible Python adapter that handles config, ACLs, mention gating, and bridge lifecycle
-- `bridge/`: a Node.js process that talks to `@yxim/nim-bot`, because the official Bot SDK is maintained for Node rather than Python
+- Hermes host: `https://github.com/NousResearch/hermes-agent`
+- Reference NIM channel: `https://github.com/openclaw/openclaw`
+- Local reference implementation: `/Users/xumengxiang/Documents/00.NetEase/05.IM/openclaw-nim-channel`
 
-## Why This Shape
+## Project Direction
 
-Hermes documents new messaging platforms as gateway platform adapters, while the reference NIM implementation available inside NetEase is TypeScript-based. Splitting the implementation keeps Hermes-facing behavior in Python and NIM protocol details in a dedicated bridge process.
+Hermes recommends third-party messaging integrations through the plugin path (`plugin.yaml` + `adapter.py`), while the proven NIM implementation already exists as the OpenClaw channel plugin. This repository is therefore initialized as:
+
+- a Hermes platform plugin at the repository root
+- a Python control layer for Hermes-facing adapter logic
+- a Node.js bridge for `@yxim/nim-bot`
+- an implementation plan that tracks `openclaw-nim-channel` capability parity where Hermes exposes equivalent host hooks
 
 ## Layout
 
 ```text
-gateway/
+plugin.yaml
+adapter.py
+__init__.py
+hermes_nim_channel/
   config.py
   platforms/
     base.py
@@ -24,10 +33,22 @@ gateway/
 bridge/
   index.mjs
   package.json
-  src/
 tests/
 openspec/
 ```
+
+## Capability Baseline
+
+The long-term functional target is to align with the already implemented capabilities in `openclaw-nim-channel`, including:
+
+- P2P, team, and QChat inbound/outbound flows
+- media delivery
+- voice-to-text handling
+- long-message chunking and streaming-friendly delivery
+- private deployment endpoints
+- reconnect and operational hardening
+
+The current repository already contains the bridge-backed Hermes prototype for credential resolution, inbound P2P/team handling, mention-gated team routing, and outbound text send. Further parity work should be implemented against this reinitialized plugin structure instead of reviving the old `gateway/` namespace layout.
 
 ## Configuration
 
@@ -43,8 +64,8 @@ Additional controls:
 - `NIM_ALLOW_ALL_USERS`: allow all DMs when `true`
 - `NIM_GROUP_POLICY`: `open`, `allowlist`, or `disabled`
 - `NIM_GROUP_ALLOWLIST`: comma-separated team IDs
-- `NIM_HOME_CHANNEL`: default team target for proactive sends
-- `NIM_BRIDGE_COMMAND`: override bridge command, defaults to `node bridge/index.mjs`
+- `NIM_HOME_CHANNEL`: default NIM target for proactive sends
+- `NIM_BRIDGE_COMMAND`: override bridge command; default points to the bundled `bridge/index.mjs`
 
 ## Local Verification
 
@@ -66,3 +87,21 @@ OpenSpec:
 OPENSPEC_TELEMETRY=0 openspec validate add-hermes-nim-channel --type change --no-interactive
 ```
 
+## SDD Workflow
+
+This repository now standardizes on the global `openspec` CLI for spec-driven development.
+
+- Project schema config: `openspec/config.yaml`
+- Workflow wrapper: `./scripts/sdd`
+- Usage guide: `docs/SDD_WORKFLOW.md`
+
+Typical flow:
+
+```bash
+./scripts/sdd new <change-name>
+./scripts/sdd instructions proposal <change-name>
+./scripts/sdd instructions specs <change-name>
+./scripts/sdd instructions design <change-name>
+./scripts/sdd instructions tasks <change-name>
+./scripts/sdd validate <change-name>
+```

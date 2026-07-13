@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.nim import NimAdapter
+from hermes_nim_channel.config import PlatformConfig
+from hermes_nim_channel.platforms.nim import NimAdapter
 
 
 class FakeBridge:

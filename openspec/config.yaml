@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  Project: hermes-nim-channel
+  Type: Hermes Agent platform plugin for NetEase IM (NIM)
+  Host integration: Hermes plugin entrypoints at repository root
+  Runtime split: Python orchestration in hermes_nim_channel/, Node SDK bridge in bridge/
+  Reference baseline: /Users/xumengxiang/Documents/00.NetEase/05.IM/openclaw-nim-channel
+  Requirement: new NIM capabilities should first map to the reference implementation,
+  then document only the Hermes-specific adaptation surface.
+
+rules:
+  proposal:
+    - State whether the change is parity work against openclaw-nim-channel or Hermes-specific adaptation.
+    - List affected capabilities using kebab-case names and keep impact scoped to this plugin repository.
+  specs:
+    - Each requirement should be phrased in SHALL language with concrete NIM behavior.
+    - When behavior differs from openclaw-nim-channel, call out the Hermes-specific reason in surrounding prose.
+  design:
+    - Explicitly separate Hermes host concerns, local Python logic, and Node bridge concerns.
+    - Record any runtime, packaging, or plugin-loading constraints that affect implementation.
+  tasks:
+    - Group tasks by vertical slice and keep each checkbox independently verifiable.
+    - Include validation steps whenever behavior, bridge protocol, or plugin entrypoints change.

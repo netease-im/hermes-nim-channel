@@ -5,7 +5,7 @@ from enum import Enum
 import inspect
 from typing import Any, Awaitable, Callable
 
-from gateway.config import Platform, PlatformConfig
+from hermes_nim_channel.config import Platform, PlatformConfig
 
 
 class ChatType(str, Enum):
@@ -67,4 +67,3 @@ class BasePlatformAdapter:
         result = self._message_handler(event)
         if inspect.isawaitable(result):
             await result
-
