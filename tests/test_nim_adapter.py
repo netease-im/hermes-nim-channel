@@ -214,6 +214,47 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("see attachment", bridge.sent[0]["text"])
         self.assertEqual("p2p", bridge.sent[0]["session_type"])
 
+    async def test_inbound_media_event_caches_attachment_paths(self) -> None:
+        bridge = FakeBridge()
+
+        async def attachment_loader(payload, kind):
+            self.assertEqual("image", kind)
+            self.assertEqual("https://example.com/a.png", payload["attachment"]["url"])
+            return ["/tmp/cached-a.png"], ["image/png"]
+
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+            attachment_loader=attachment_loader,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "p2p",
+                    "sender_id": "alice",
+                    "target_id": "bot",
+                    "text": "[Image] https://example.com/a.png",
+                    "message_id": "m-6",
+                    "message_type": "image",
+                    "attachment": {
+                        "url": "https://example.com/a.png",
+                        "name": "a.png",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(1, len(accepted))
+        self.assertEqual(["/tmp/cached-a.png"], accepted[0].media_urls)
+        self.assertEqual(["image/png"], accepted[0].media_types)
+
 
 if __name__ == "__main__":
     unittest.main()

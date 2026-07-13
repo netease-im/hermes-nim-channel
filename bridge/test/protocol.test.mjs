@@ -98,3 +98,27 @@ test("inbound conversion extracts mention metadata", () => {
   assert.equal(payload.mentioned, true);
   assert.equal(eventMessage("message", payload).event, "message");
 });
+
+test("inbound media conversion preserves attachment metadata and placeholder text", () => {
+  const payload = toInboundMessage(
+    {
+      conversationId: "0|1|alice",
+      senderId: "alice",
+      receiverId: "bot",
+      messageType: 1,
+      messageClientId: "client-2",
+      attachment: {
+        url: "https://example.com/a.png",
+        name: "a.png",
+        size: 1234,
+        w: 320,
+        h: 240,
+      },
+    },
+    "bot",
+  );
+  assert.equal(payload.message_type, "image");
+  assert.equal(payload.text, "[Image] https://example.com/a.png");
+  assert.equal(payload.attachment?.url, "https://example.com/a.png");
+  assert.equal(payload.attachment?.width, 320);
+});

@@ -4,12 +4,14 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, cache_media_bytes
 from gateway.session import SessionSource
 
 from hermes_nim_channel.config import load_nim_config
+from hermes_nim_channel.inbound_media import infer_media_kind, parse_inbound_attachment
 from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
 
 
@@ -141,7 +143,7 @@ class HermesNimAdapter(BasePlatformAdapter):
         payload = dict(envelope.get("payload") or {})
         if self._should_ignore(payload):
             return
-        event = self._to_message_event(payload)
+        event = await self._to_message_event(payload)
         self._chat_names[event.source.chat_id] = event.source.chat_name
         await self.handle_message(event)
 
@@ -180,13 +182,15 @@ class HermesNimAdapter(BasePlatformAdapter):
         account = self.resolved.credentials.account if self.resolved.credentials else ""
         return bool(account and account in force_push_ids)
 
-    def _to_message_event(self, payload: dict[str, Any]) -> MessageEvent:
+    async def _to_message_event(self, payload: dict[str, Any]) -> MessageEvent:
         session_type = str(payload.get("session_type") or "p2p")
         sender_id = str(payload.get("sender_id") or "")
         target_id = str(payload.get("target_id") or "")
         chat_type = "dm" if session_type == "p2p" else "group"
         chat_id = f"user:{sender_id}" if session_type == "p2p" else f"team:{target_id}"
         message_id = str(payload.get("message_id") or payload.get("client_message_id") or "")
+        message_type = self._to_message_type(str(payload.get("message_type") or "text"))
+        media_urls, media_types = await self._load_media_attachments(payload, message_type)
         source = SessionSource(
             platform=Platform("nim"),
             chat_id=chat_id,
@@ -198,10 +202,12 @@ class HermesNimAdapter(BasePlatformAdapter):
         )
         return MessageEvent(
             text=str(payload.get("text") or ""),
-            message_type=self._to_message_type(str(payload.get("message_type") or "text")),
+            message_type=message_type,
             source=source,
             raw_message=payload,
             message_id=message_id,
+            media_urls=media_urls,
+            media_types=media_types,
             metadata={
                 "session_type": session_type,
                 "target_id": target_id,
@@ -226,6 +232,40 @@ class HermesNimAdapter(BasePlatformAdapter):
             "file": MessageType.DOCUMENT,
         }
         return mapping.get(value, MessageType.TEXT)
+
+    async def _load_media_attachments(
+        self,
+        payload: dict[str, Any],
+        message_type: MessageType,
+    ) -> tuple[list[str], list[str]]:
+        kind = infer_media_kind(getattr(message_type, "value", str(message_type)))
+        if not kind:
+            return [], []
+
+        attachment = parse_inbound_attachment(payload)
+        if attachment is None:
+            return [], []
+
+        try:
+            request = Request(
+                attachment.url,
+                headers={"User-Agent": "hermes-nim-channel/0.2"},
+            )
+            with urlopen(request, timeout=20) as response:
+                data = response.read()
+                mime_type = attachment.mime_type or str(response.headers.get_content_type() or "").strip()
+
+            cached = cache_media_bytes(
+                data,
+                filename=attachment.name,
+                mime_type=mime_type,
+                default_kind=kind,
+            )
+        except Exception:
+            return [], []
+        if cached is None:
+            return [], []
+        return [cached.path], [cached.media_type]
 
     async def _send_media_with_optional_caption(
         self,

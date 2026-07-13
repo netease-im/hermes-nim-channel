@@ -89,6 +89,44 @@ export function parseConversationId(conversationId) {
   };
 }
 
+function normalizeAttachment(attach) {
+  if (!attach || typeof attach !== "object") {
+    return null;
+  }
+
+  const url = String(attach.url ?? "").trim();
+  if (!url) {
+    return null;
+  }
+
+  return {
+    url,
+    name: attach.name ?? null,
+    size: attach.size ?? null,
+    mime_type: null,
+    width: attach.w ?? null,
+    height: attach.h ?? null,
+    duration: attach.dur ?? null,
+  };
+}
+
+function extractInboundText(messageType, text, attachment) {
+  const content = String(text ?? "");
+  if (content.trim()) {
+    return content;
+  }
+
+  const attachmentUrl = attachment?.url ?? "";
+  const placeholders = {
+    image: "[Image]",
+    audio: "[Audio]",
+    video: "[Video]",
+    file: "[File]",
+  };
+  const prefix = placeholders[messageType] ?? "";
+  return prefix ? `${prefix} ${attachmentUrl}`.trim() : content;
+}
+
 export function toInboundMessage(message, botAccount) {
   const parsed = parseConversationId(message?.conversationId);
   const pushIds = message?.pushConfig?.forcePushAccountIds ?? [];
@@ -100,6 +138,8 @@ export function toInboundMessage(message, botAccount) {
     3: "video",
     6: "file",
   };
+  const messageType = typeMap[message?.messageType] ?? "unknown";
+  const attachment = normalizeAttachment(message?.attachment ?? message?.attach);
 
   return {
     message_id: String(message?.messageServerId ?? message?.messageClientId ?? ""),
@@ -109,8 +149,9 @@ export function toInboundMessage(message, botAccount) {
     sender_name: message?.senderName ?? null,
     target_id: String(message?.receiverId ?? parsed.targetId ?? ""),
     conversation_name: null,
-    text: message?.text ?? "",
-    message_type: typeMap[message?.messageType] ?? "unknown",
+    text: extractInboundText(messageType, message?.text, attachment),
+    message_type: messageType,
+    attachment,
     force_push_account_ids: pushIds,
     mentioned,
     mention_all: false,
@@ -118,4 +159,3 @@ export function toInboundMessage(message, botAccount) {
     raw: message,
   };
 }
-

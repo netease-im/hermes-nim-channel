@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import inspect
 from typing import Any, Awaitable, Callable
@@ -39,6 +39,8 @@ class MessageEvent:
     text: str
     source: MessageSource
     raw: dict[str, Any]
+    media_urls: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

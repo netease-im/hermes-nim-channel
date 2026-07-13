@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from hermes_nim_channel.config import NimResolvedConfig, Platform, PlatformConfig, load_nim_config
+from hermes_nim_channel.inbound_media import (
+    NimInboundAttachment,
+    cache_attachment_bytes_local,
+    fetch_attachment_bytes,
+    infer_media_kind,
+    parse_inbound_attachment,
+)
 from hermes_nim_channel.platforms.base import (
     BasePlatformAdapter,
     ChatType,
@@ -14,6 +21,8 @@ from hermes_nim_channel.platforms.base import (
     SendResult,
 )
 from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
+
+AttachmentLoader = Callable[[dict[str, Any], str], tuple[list[str], list[str]] | Awaitable[tuple[list[str], list[str]]]]
 
 
 @dataclass(slots=True)
@@ -29,11 +38,13 @@ class NimAdapter(BasePlatformAdapter):
         config: PlatformConfig,
         *,
         bridge: NodeBridgeProcess | Any | None = None,
+        attachment_loader: AttachmentLoader | None = None,
     ) -> None:
         super().__init__(config=config, platform=Platform.NIM)
         self.resolved: NimResolvedConfig = load_nim_config(config)
         self._bridge = bridge or NodeBridgeProcess(self.resolved.bridge_command)
         self._chat_cache: dict[str, ChatInfo] = {}
+        self._attachment_loader = attachment_loader
 
     async def connect(self) -> bool:
         if not self.resolved.configured():
@@ -156,7 +167,7 @@ class NimAdapter(BasePlatformAdapter):
         payload = dict(envelope.get("payload") or {})
         if self._should_ignore(payload):
             return
-        event = self._to_message_event(payload)
+        event = await self._to_message_event(payload)
         self._chat_cache[event.source.chat_id] = ChatInfo(
             chat_id=event.source.chat_id,
             chat_type=event.source.chat_type,
@@ -199,7 +210,7 @@ class NimAdapter(BasePlatformAdapter):
         account = self.resolved.credentials.account if self.resolved.credentials else ""
         return bool(account and account in force_push_ids)
 
-    def _to_message_event(self, payload: dict[str, Any]) -> MessageEvent:
+    async def _to_message_event(self, payload: dict[str, Any]) -> MessageEvent:
         session_type = str(payload.get("session_type") or "p2p")
         sender_id = str(payload.get("sender_id") or "")
         target_id = str(payload.get("target_id") or "")
@@ -214,12 +225,15 @@ class NimAdapter(BasePlatformAdapter):
             chat_name=payload.get("conversation_name"),
         )
         message_type = self._to_message_type(str(payload.get("message_type") or "text"))
+        media_urls, media_types = await self._load_media_attachments(payload, message_type)
         return MessageEvent(
             message_id=str(payload.get("message_id") or payload.get("client_message_id") or ""),
             message_type=message_type.value,
             text=str(payload.get("text") or ""),
             source=source,
             raw=payload,
+            media_urls=media_urls,
+            media_types=media_types,
         )
 
     def _infer_session_type(self, chat_id: str, metadata: dict[str, Any] | None) -> str:
@@ -267,6 +281,48 @@ class NimAdapter(BasePlatformAdapter):
         if caption_result.success and not caption_result.message_id:
             caption_result.message_id = media_result.message_id
         return caption_result
+
+    async def _load_media_attachments(
+        self,
+        payload: dict[str, Any],
+        message_type: MessageType,
+    ) -> tuple[list[str], list[str]]:
+        kind = infer_media_kind(message_type.value)
+        if not kind:
+            return [], []
+
+        if self._attachment_loader is not None:
+            try:
+                result = self._attachment_loader(payload, kind)
+                if isinstance(result, tuple):
+                    return result
+                return await result
+            except Exception:
+                return [], []
+
+        attachment = parse_inbound_attachment(payload)
+        if attachment is None:
+            return [], []
+
+        try:
+            data, mime_type = fetch_attachment_bytes(attachment)
+            attachment = NimInboundAttachment(
+                url=attachment.url,
+                name=attachment.name,
+                size=attachment.size,
+                mime_type=mime_type,
+                width=attachment.width,
+                height=attachment.height,
+                duration=attachment.duration,
+            )
+            cached = cache_attachment_bytes_local(
+                data,
+                attachment=attachment,
+                kind=kind,
+            )
+            return [cached.path], [cached.media_type]
+        except Exception:
+            return [], []
 
 
 PlatformAdapter = NimAdapter
