@@ -34,6 +34,8 @@ class NimResolvedConfig:
     allow_all_users: bool = False
     group_policy: str = "allowlist"
     group_allowlist: list[str] = field(default_factory=list)
+    qchat_policy: str = "open"
+    qchat_allow_from: list[str] = field(default_factory=list)
     home_channel: str | None = None
     bridge_command: list[str] = field(default_factory=lambda: ["node", "bridge/index.mjs"])
     media_max_mb: int = 30
@@ -55,6 +57,10 @@ class NimResolvedConfig:
             "debug": self.debug,
             "media_max_mb": self.media_max_mb,
             "home_channel": self.home_channel,
+            "qchat": {
+                "policy": self.qchat_policy,
+                "allowFrom": self.qchat_allow_from,
+            },
         }
 
 
@@ -134,6 +140,10 @@ def load_nim_config(
                 token=str(token).strip(),
             )
 
+    qchat_allow_from = _as_list(_pick(extra, env, "qchat_allow_from", "NIM_QCHAT_ALLOW_FROM"))
+    if not qchat_allow_from:
+        qchat_allow_from = _as_list(_pick(extra, env, "qchat_allowlist", "NIM_QCHAT_ALLOWLIST"))
+
     return NimResolvedConfig(
         enabled=platform.enabled,
         credentials=credentials,
@@ -144,6 +154,8 @@ def load_nim_config(
         ),
         group_policy=str(_pick(extra, env, "group_policy", "NIM_GROUP_POLICY") or "allowlist").strip(),
         group_allowlist=_as_list(_pick(extra, env, "group_allowlist", "NIM_GROUP_ALLOWLIST")),
+        qchat_policy=str(_pick(extra, env, "qchat_policy", "NIM_QCHAT_POLICY") or "open").strip(),
+        qchat_allow_from=qchat_allow_from,
         home_channel=str(_pick(extra, env, "home_channel", "NIM_HOME_CHANNEL") or "").strip() or None,
         bridge_command=_resolve_bridge_command(_pick(extra, env, "bridge_command", "NIM_BRIDGE_COMMAND")),
         media_max_mb=int(_pick(extra, env, "media_max_mb", "NIM_MEDIA_MAX_MB") or 30),

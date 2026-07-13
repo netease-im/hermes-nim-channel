@@ -32,6 +32,16 @@ export function parseBridgeConfig(raw) {
     debug: Boolean(raw?.debug),
     mediaMaxMb: Number(raw?.media_max_mb ?? raw?.mediaMaxMb ?? 30),
     homeChannel: raw?.home_channel ?? raw?.homeChannel ?? null,
+    qchat: {
+      policy: String(raw?.qchat?.policy ?? raw?.qchat_policy ?? raw?.qchatPolicy ?? "open").trim() || "open",
+      allowFrom: Array.isArray(raw?.qchat?.allowFrom)
+        ? raw.qchat.allowFrom
+        : Array.isArray(raw?.qchat_allow_from)
+          ? raw.qchat_allow_from
+          : Array.isArray(raw?.qchatAllowFrom)
+            ? raw.qchatAllowFrom
+            : [],
+    },
   };
 }
 

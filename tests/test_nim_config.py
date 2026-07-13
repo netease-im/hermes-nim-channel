@@ -51,12 +51,29 @@ class NimConfigTests(unittest.TestCase):
                 "NIM_ALLOWED_USERS": "alice,bob",
                 "NIM_GROUP_ALLOWLIST": "team-a,team-b",
                 "NIM_GROUP_POLICY": "open",
+                "NIM_QCHAT_POLICY": "allowlist",
+                "NIM_QCHAT_ALLOW_FROM": "server-a|channel-a,server-b",
             },
         )
         assert resolved.credentials is not None
         self.assertEqual(["alice", "bob"], resolved.allowed_users)
         self.assertEqual(["team-a", "team-b"], resolved.group_allowlist)
         self.assertEqual("open", resolved.group_policy)
+        self.assertEqual("allowlist", resolved.qchat_policy)
+        self.assertEqual(["server-a|channel-a", "server-b"], resolved.qchat_allow_from)
+
+    def test_qchat_allowlist_alias_is_supported(self) -> None:
+        resolved = load_nim_config(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "qchat_allowlist": ["server-x|channel-y"],
+                }
+            ),
+            {},
+        )
+        assert resolved.credentials is not None
+        self.assertEqual(["server-x|channel-y"], resolved.qchat_allow_from)
 
     def test_bridge_command_prefers_installed_binary(self) -> None:
         with mock.patch("hermes_nim_channel.config.shutil.which", return_value="/usr/local/bin/hermes-nim-bridge"):

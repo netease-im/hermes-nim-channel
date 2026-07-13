@@ -12,6 +12,7 @@ from gateway.session import SessionSource
 
 from hermes_nim_channel.config import load_nim_config
 from hermes_nim_channel.inbound_media import infer_media_kind, parse_inbound_attachment
+from hermes_nim_channel.qchat import build_qchat_chat_id, is_qchat_allowed, parse_qchat_chat_id
 from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
 
 
@@ -46,12 +47,20 @@ class HermesNimAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         session_type = self._infer_session_type(chat_id, metadata)
-        result = await self._bridge.send_text(
-            chat_id=chat_id,
-            text=str(content or ""),
-            session_type=session_type,
-            reply_to=reply_to or (metadata or {}).get("reply_to"),
-        )
+        if session_type == "qchat":
+            result = await self._bridge.send_qchat_message(
+                chat_id=chat_id,
+                text=str(content or ""),
+                session_type=session_type,
+                reply_to=reply_to or (metadata or {}).get("reply_to"),
+            )
+        else:
+            result = await self._bridge.send_text(
+                chat_id=chat_id,
+                text=str(content or ""),
+                session_type=session_type,
+                reply_to=reply_to or (metadata or {}).get("reply_to"),
+            )
         return SendResult(
             success=True,
             message_id=str(result.get("message_id") or result.get("client_message_id") or ""),
@@ -132,6 +141,11 @@ class HermesNimAdapter(BasePlatformAdapter):
         )
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+        if parse_qchat_chat_id(chat_id) is not None:
+            return {
+                "name": self._chat_names.get(chat_id) or chat_id,
+                "type": "group",
+            }
         return {
             "name": self._chat_names.get(chat_id) or chat_id,
             "type": "group" if chat_id.startswith("team:") else "dm",
@@ -158,6 +172,19 @@ class HermesNimAdapter(BasePlatformAdapter):
             if not self._is_allowed_group(str(payload.get("target_id") or "")):
                 return True
             return not self._is_mentioned(payload)
+        if session_type == "qchat":
+            if not self._is_mentioned(payload):
+                return True
+            server_id, channel_id = self._resolve_qchat_target(payload)
+            if not server_id or not channel_id:
+                return True
+            return not is_qchat_allowed(
+                policy=self.resolved.qchat_policy,
+                allow_from=self.resolved.qchat_allow_from,
+                server_id=server_id,
+                channel_id=channel_id,
+                sender_accid=sender_id,
+            )
         return True
 
     def _is_allowed_direct_sender(self, sender_id: str) -> bool:
@@ -182,12 +209,33 @@ class HermesNimAdapter(BasePlatformAdapter):
         account = self.resolved.credentials.account if self.resolved.credentials else ""
         return bool(account and account in force_push_ids)
 
+    def _resolve_qchat_target(self, payload: dict[str, Any]) -> tuple[str, str]:
+        parsed = parse_qchat_chat_id(str(payload.get("target_id") or payload.get("chat_id") or ""))
+        if parsed is not None:
+            return parsed
+        server_id = str(payload.get("server_id") or "").strip()
+        channel_id = str(payload.get("channel_id") or "").strip()
+        if server_id and channel_id:
+            return server_id, channel_id
+        return "", ""
+
     async def _to_message_event(self, payload: dict[str, Any]) -> MessageEvent:
         session_type = str(payload.get("session_type") or "p2p")
         sender_id = str(payload.get("sender_id") or "")
         target_id = str(payload.get("target_id") or "")
         chat_type = "dm" if session_type == "p2p" else "group"
-        chat_id = f"user:{sender_id}" if session_type == "p2p" else f"team:{target_id}"
+        if session_type == "qchat":
+            server_id = str(payload.get("server_id") or "")
+            channel_id = str(payload.get("channel_id") or "")
+            parsed_target = parse_qchat_chat_id(target_id)
+            if parsed_target is not None:
+                server_id, channel_id = parsed_target
+            elif not (server_id and channel_id):
+                server_id = ""
+                channel_id = ""
+            chat_id = build_qchat_chat_id(server_id, channel_id) if server_id and channel_id else target_id or "qchat:unknown"
+        else:
+            chat_id = f"user:{sender_id}" if session_type == "p2p" else f"team:{target_id}"
         message_id = str(payload.get("message_id") or payload.get("client_message_id") or "")
         message_type = self._to_message_type(str(payload.get("message_type") or "text"))
         media_urls, media_types = await self._load_media_attachments(payload, message_type)
@@ -211,6 +259,8 @@ class HermesNimAdapter(BasePlatformAdapter):
             metadata={
                 "session_type": session_type,
                 "target_id": target_id,
+                "server_id": payload.get("server_id"),
+                "channel_id": payload.get("channel_id"),
                 "mentioned": bool(payload.get("mentioned")),
                 "mention_all": bool(payload.get("mention_all")),
             },
@@ -219,6 +269,8 @@ class HermesNimAdapter(BasePlatformAdapter):
     def _infer_session_type(self, chat_id: str, metadata: dict[str, Any] | None) -> str:
         if metadata and metadata.get("session_type"):
             return str(metadata["session_type"])
+        if parse_qchat_chat_id(chat_id) is not None:
+            return "qchat"
         if chat_id.startswith("team:"):
             return "team"
         return "p2p"

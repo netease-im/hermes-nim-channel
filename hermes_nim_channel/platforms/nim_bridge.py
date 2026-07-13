@@ -100,6 +100,27 @@ class NodeBridgeProcess:
             raise BridgeError(response.get("error", "send_message failed"))
         return dict(response.get("result") or {})
 
+    async def send_qchat_message(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        session_type: str,
+        reply_to: str | None = None,
+    ) -> dict[str, Any]:
+        response = await self.request(
+            "send_qchat_message",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "session_type": session_type,
+                "reply_to": reply_to,
+            },
+        )
+        if response.get("status") != "ok":
+            raise BridgeError(response.get("error", "send_qchat_message failed"))
+        return dict(response.get("result") or {})
+
     async def send_media(
         self,
         *,

@@ -13,6 +13,7 @@ class FakeBridge:
         self.started = False
         self.stopped = False
         self.sent: list[dict[str, str]] = []
+        self.qchat_sent: list[dict[str, str]] = []
         self.media_sent: list[dict[str, str]] = []
         self.event_handler = None
 
@@ -35,6 +36,23 @@ class FakeBridge:
             }
         )
         return {"message_id": "msg-1"}
+
+    async def send_qchat_message(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        session_type: str,
+        reply_to=None,
+    ) -> dict[str, str]:
+        self.qchat_sent.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "session_type": session_type,
+            }
+        )
+        return {"message_id": "qchat-1"}
 
     async def send_media(
         self,
@@ -185,6 +203,18 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual("team", bridge.sent[0]["session_type"])
 
+    async def test_send_routes_qchat_targets_to_qchat_bridge(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send("qchat:server-a:channel-b", "hello")
+        self.assertTrue(result.success)
+        self.assertEqual("qchat", bridge.qchat_sent[0]["session_type"])
+        self.assertEqual("qchat:server-a:channel-b", bridge.qchat_sent[0]["chat_id"])
+
     async def test_send_image_file_uses_bridge_media_path(self) -> None:
         bridge = FakeBridge()
         adapter = NimAdapter(
@@ -255,6 +285,78 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(accepted))
         self.assertEqual(["/tmp/cached-a.png"], accepted[0].media_urls)
         self.assertEqual(["image/png"], accepted[0].media_types)
+
+    async def test_inbound_qchat_requires_mention_and_allowlist_match(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "qchat_policy": "allowlist",
+                    "qchat_allow_from": ["server-a|channel-a"],
+                }
+            ),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "qchat",
+                    "sender_id": "alice",
+                    "server_id": "server-a",
+                    "channel_id": "channel-b",
+                    "target_id": "server-a:channel-b",
+                    "text": "hello",
+                    "message_id": "m-7",
+                    "message_type": "text",
+                    "mentioned": True,
+                },
+            }
+        )
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "qchat",
+                    "sender_id": "alice",
+                    "server_id": "server-a",
+                    "channel_id": "channel-a",
+                    "target_id": "server-a:channel-a",
+                    "text": "hello",
+                    "message_id": "m-8",
+                    "message_type": "text",
+                    "mentioned": False,
+                },
+            }
+        )
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "qchat",
+                    "sender_id": "alice",
+                    "server_id": "server-a",
+                    "channel_id": "channel-a",
+                    "target_id": "server-a:channel-a",
+                    "text": "hello",
+                    "message_id": "m-9",
+                    "message_type": "text",
+                    "mentioned": True,
+                },
+            }
+        )
+
+        self.assertEqual(1, len(accepted))
+        self.assertEqual("qchat:server-a:channel-a", accepted[0].source.chat_id)
 
     def test_inbound_attachment_preserves_scene_name(self) -> None:
         attachment = parse_inbound_attachment(
