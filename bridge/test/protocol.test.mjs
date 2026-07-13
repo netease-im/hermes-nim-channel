@@ -8,6 +8,7 @@ import {
   normalizeTarget,
   parseBridgeConfig,
   ReplyMessageCache,
+  resolveTeamName,
   splitMessageIntoChunks,
   toInboundMessage,
 } from "../src/config.mjs";
@@ -265,6 +266,47 @@ test("inbound conversion extracts mention metadata", async () => {
   assert.equal(payload.session_type, "team");
   assert.equal(payload.mentioned, true);
   assert.equal(eventMessage("message", payload).event, "message");
+});
+
+test("inbound team conversion resolves conversation name", async () => {
+  const calls = [];
+  const nim = {
+    V2NIMTeamService: {
+      async getTeamInfo(teamId, teamType) {
+        calls.push([teamId, teamType]);
+        return { name: "Engineering" };
+      },
+    },
+  };
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|2|team-2",
+      senderId: "alice",
+      receiverId: "team-2",
+      messageType: 0,
+      messageClientId: "client-team-name",
+      text: "hello",
+    },
+    "bot",
+    nim,
+  );
+  assert.equal(payload.conversation_name, "Engineering");
+  assert.deepEqual(calls, [["team-2", 1]]);
+});
+
+test("team name resolver falls back to team id", async () => {
+  const name = await resolveTeamName(
+    {
+      V2NIMTeamService: {
+        async getTeamInfo() {
+          throw new Error("unavailable");
+        },
+      },
+    },
+    "team-fallback",
+    "superTeam",
+  );
+  assert.equal(name, "team-fallback");
 });
 
 test("inbound media conversion preserves attachment metadata and placeholder text", async () => {

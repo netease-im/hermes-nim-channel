@@ -297,6 +297,38 @@ export function splitMessageIntoChunks(text, maxLength = 4000) {
   return chunks;
 }
 
+const teamNameCache = new Map();
+
+export async function resolveTeamName(nim, teamId, sessionType = "team") {
+  const normalizedTeamId = String(teamId ?? "").trim();
+  if (!normalizedTeamId) {
+    return null;
+  }
+  const normalizedSessionType = sessionType === "superTeam" ? "superTeam" : "team";
+  const cacheKey = `${normalizedSessionType}:${normalizedTeamId}`;
+  if (teamNameCache.has(cacheKey)) {
+    return teamNameCache.get(cacheKey);
+  }
+
+  let name = normalizedTeamId;
+  try {
+    const teamService = nim?.V2NIMTeamService;
+    if (teamService?.getTeamInfo) {
+      const teamType = normalizedSessionType === "superTeam" ? 2 : 1;
+      const teamInfo = await teamService.getTeamInfo(normalizedTeamId, teamType);
+      const resolvedName = String(teamInfo?.name ?? "").trim();
+      if (resolvedName) {
+        name = resolvedName;
+      }
+    }
+  } catch {
+    name = normalizedTeamId;
+  }
+
+  teamNameCache.set(cacheKey, name);
+  return name;
+}
+
 function normalizeAttachment(attach) {
   if (!attach || typeof attach !== "object") {
     return null;
@@ -378,6 +410,11 @@ export async function toInboundMessage(message, botAccount, nim = null) {
       text = transcribedText;
     }
   }
+  const targetId = String(message?.receiverId ?? parsed.targetId ?? "");
+  const conversationName =
+    parsed.sessionType === "team" || parsed.sessionType === "superTeam"
+      ? await resolveTeamName(nim, targetId, parsed.sessionType)
+      : null;
 
   return {
     message_id: String(message?.messageServerId ?? message?.messageClientId ?? ""),
@@ -385,8 +422,8 @@ export async function toInboundMessage(message, botAccount, nim = null) {
     session_type: parsed.sessionType,
     sender_id: String(message?.senderId ?? ""),
     sender_name: message?.senderName ?? null,
-    target_id: String(message?.receiverId ?? parsed.targetId ?? ""),
-    conversation_name: null,
+    target_id: targetId,
+    conversation_name: conversationName,
     text,
     message_type: messageType,
     attachment,
