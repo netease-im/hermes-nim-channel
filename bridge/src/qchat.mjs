@@ -149,6 +149,7 @@ export function normalizeQChatMessage(message, botAccount) {
     server_id: serverId,
     channel_id: channelId,
     conversation_name: msg.channelName ?? msg.channel_name ?? null,
+    channel_topic: msg.channelTopic ?? msg.channel_topic ?? null,
     text,
     message_type: messageType,
     force_push_account_ids: mentionAccids,
@@ -157,6 +158,64 @@ export function normalizeQChatMessage(message, botAccount) {
     mention_all: mentionAll,
     from_self: senderAccid === String(botAccount ?? ""),
     raw: msg,
+  };
+}
+
+export function createQChatChannelInfoResolver(nim, ttlMs = 60 * 60 * 1000) {
+  const cache = new Map();
+  const timestamps = new Map();
+
+  return async function resolveQChatChannelInfo(serverId, channelId) {
+    const normalizedChannelId = String(channelId ?? "").trim();
+    if (!normalizedChannelId || !nim?.qchatChannel?.getChannels) {
+      return null;
+    }
+
+    const now = Date.now();
+    const cached = cache.get(normalizedChannelId);
+    const cachedAt = timestamps.get(normalizedChannelId) ?? 0;
+    if (cached && now - cachedAt < ttlMs) {
+      return cached;
+    }
+
+    try {
+      const result = await nim.qchatChannel.getChannels({
+        channelIds: [normalizedChannelId],
+      });
+      const channels = Array.isArray(result) ? result : Array.isArray(result?.datas) ? result.datas : [];
+      const channelInfo = channels[0] ?? null;
+      if (!channelInfo) {
+        return null;
+      }
+      const normalized = {
+        serverId: String(channelInfo.serverId ?? serverId ?? "").trim() || null,
+        channelId: String(channelInfo.channelId ?? channelInfo.id ?? normalizedChannelId).trim(),
+        name: String(channelInfo.name ?? channelInfo.channelName ?? "").trim() || null,
+        topic: String(channelInfo.topic ?? channelInfo.channelTopic ?? "").trim() || null,
+        raw: channelInfo,
+      };
+      cache.set(normalizedChannelId, normalized);
+      timestamps.set(normalizedChannelId, now);
+      return normalized;
+    } catch {
+      return null;
+    }
+  };
+}
+
+export async function enrichQChatMessageWithChannelInfo(payload, resolveChannelInfo) {
+  if (!payload || typeof payload !== "object" || typeof resolveChannelInfo !== "function") {
+    return payload;
+  }
+  const channelInfo = await resolveChannelInfo(payload.server_id, payload.channel_id);
+  if (!channelInfo) {
+    return payload;
+  }
+  return {
+    ...payload,
+    conversation_name: payload.conversation_name ?? channelInfo.name,
+    channel_topic: payload.channel_topic ?? channelInfo.topic,
+    channel_info: channelInfo,
   };
 }
 

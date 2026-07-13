@@ -297,6 +297,8 @@ class HermesNimAdapter(BasePlatformAdapter):
                 "mention_all": bool(payload.get("mention_all")),
                 "topic_refer": payload.get("topic_refer"),
                 "thread_reply": payload.get("thread_reply"),
+                "channel_topic": payload.get("channel_topic"),
+                "channel_info": payload.get("channel_info"),
             },
         )
 

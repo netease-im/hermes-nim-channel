@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 
 import { parseBridgeConfig } from "../src/config.mjs";
 import {
+  createQChatChannelInfoResolver,
   deriveQChatServerIds,
+  enrichQChatMessageWithChannelInfo,
   isQChatAllowed,
   isQChatTargetAllowed,
   normalizeQChatMessage,
@@ -104,6 +106,53 @@ test("qchat inbound normalization preserves mention metadata", () => {
   assert.equal(payload.target_id, "server-a:channel-b");
   assert.equal(payload.mentioned, true);
   assert.equal(payload.from_self, false);
+});
+
+test("qchat channel info resolver supports sdk result arrays", async () => {
+  const calls = [];
+  const resolver = createQChatChannelInfoResolver({
+    qchatChannel: {
+      async getChannels(params) {
+        calls.push(params);
+        return [
+          {
+            serverId: "server-a",
+            channelId: "channel-b",
+            name: "General",
+            topic: "Daily work",
+          },
+        ];
+      },
+    },
+  });
+  const info = await resolver("server-a", "channel-b");
+  assert.equal(info.name, "General");
+  assert.equal(info.topic, "Daily work");
+  const cached = await resolver("server-a", "channel-b");
+  assert.equal(cached, info);
+  assert.equal(calls.length, 1);
+});
+
+test("qchat channel info enrichment fills missing name and topic", async () => {
+  const payload = normalizeQChatMessage(
+    {
+      message: {
+        serverId: "server-a",
+        channelId: "channel-b",
+        fromAccount: "alice",
+        body: "hello",
+        msgIdServer: "msg-2",
+        mentionAccids: ["bot"],
+      },
+    },
+    "bot",
+  );
+  const enriched = await enrichQChatMessageWithChannelInfo(payload, async () => ({
+    name: "General",
+    topic: "Daily work",
+  }));
+  assert.equal(enriched.conversation_name, "General");
+  assert.equal(enriched.channel_topic, "Daily work");
 });
 
 test("qchat allowlist server ids are derived from allowFrom entries", () => {

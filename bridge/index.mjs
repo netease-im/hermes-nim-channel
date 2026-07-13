@@ -17,6 +17,8 @@ import {
 import { createMediaMessage, normalizeMediaKind } from "./src/media.mjs";
 import {
   deriveQChatServerIds,
+  createQChatChannelInfoResolver,
+  enrichQChatMessageWithChannelInfo,
   isQChatTargetAllowed,
   normalizeQChatMessage,
   normalizeQChatSystemNotification,
@@ -241,6 +243,7 @@ async function setupQChatRuntime(nim, config) {
 
   const subscribedServerIds = new Set();
   const logPrefix = "[qchat]";
+  const resolveChannelInfo = createQChatChannelInfoResolver(nim);
 
   const subscribeServer = async (serverId) => {
     if (!serverId || subscribedServerIds.has(serverId)) {
@@ -281,11 +284,21 @@ async function setupQChatRuntime(nim, config) {
   };
 
   const messageHandler = (message) => {
-    const normalized = normalizeQChatMessage(message, config.credentials.account);
-    if (!normalized) {
-      return;
-    }
-    emit(eventMessage("message", normalized));
+    void (async () => {
+      const normalized = normalizeQChatMessage(message, config.credentials.account);
+      if (!normalized) {
+        return;
+      }
+      let enriched = normalized;
+      try {
+        enriched = await enrichQChatMessageWithChannelInfo(normalized, resolveChannelInfo);
+      } catch (error) {
+        console.warn(`${logPrefix} message enrich failed — error: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      emit(eventMessage("message", enriched));
+    })().catch((error) => {
+      console.warn(`${logPrefix} message handling failed — error: ${error instanceof Error ? error.message : String(error)}`);
+    });
   };
 
   const systemNotificationHandler = async (notification) => {
