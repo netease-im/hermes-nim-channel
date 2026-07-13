@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildNimConstructorOptions,
   isP2pApplicantAllowed,
+  collectReadReceiptBatches,
   normalizeTarget,
   parseBridgeConfig,
   toInboundMessage,
@@ -118,6 +119,38 @@ test("p2p applicant policy supports open allowlist and disabled modes", () => {
   );
   assert.equal(isP2pApplicantAllowed({ policy: "disabled", applicantId: "alice" }), false);
   assert.equal(isP2pApplicantAllowed({ policy: "open", applicantId: "" }), false);
+});
+
+test("read receipt batches include only online p2p and team messages", () => {
+  const messages = [
+    { conversationId: "0|1|alice", messageSource: 1, id: "p2p-online" },
+    { conversationId: "0|1|bob", messageSource: 2, id: "p2p-offline" },
+    { conversationId: "0|2|team-a", messageSource: 1, id: "team-online" },
+    { conversationId: "0|3|super-a", messageSource: 1, id: "super-online" },
+    { conversationId: "0|2|team-b", messageSource: 3, id: "team-history" },
+  ];
+  const batches = collectReadReceiptBatches(messages, 50);
+  assert.deepEqual(
+    batches.p2p.map((message) => message.id),
+    ["p2p-online"],
+  );
+  assert.deepEqual(
+    batches.teamBatches.map((batch) => batch.map((message) => message.id)),
+    [["team-online", "super-online"]],
+  );
+});
+
+test("team read receipt batches are bounded", () => {
+  const messages = Array.from({ length: 51 }, (_, index) => ({
+    conversationId: `0|2|team-${index}`,
+    messageSource: 1,
+    id: `team-${index}`,
+  }));
+  const batches = collectReadReceiptBatches(messages, 50);
+  assert.equal(batches.p2p.length, 0);
+  assert.equal(batches.teamBatches.length, 2);
+  assert.equal(batches.teamBatches[0].length, 50);
+  assert.equal(batches.teamBatches[1].length, 1);
 });
 
 test("target normalization preserves team routing", () => {

@@ -196,6 +196,34 @@ export function parseConversationId(conversationId) {
   };
 }
 
+export function collectReadReceiptBatches(messages = [], batchSize = 50) {
+  const p2p = [];
+  const team = [];
+  const safeBatchSize = Math.max(1, Number(batchSize) || 50);
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (message?.messageSource !== 1) {
+      continue;
+    }
+    const { sessionType } = parseConversationId(message?.conversationId ?? "");
+    if (sessionType === "p2p") {
+      p2p.push(message);
+    } else if (sessionType === "team" || sessionType === "superTeam") {
+      team.push(message);
+    }
+  }
+
+  const teamBatches = [];
+  for (let index = 0; index < team.length; index += safeBatchSize) {
+    teamBatches.push(team.slice(index, index + safeBatchSize));
+  }
+
+  return {
+    p2p,
+    teamBatches,
+  };
+}
+
 function normalizeAttachment(attach) {
   if (!attach || typeof attach !== "object") {
     return null;

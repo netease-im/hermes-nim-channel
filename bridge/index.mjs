@@ -5,6 +5,7 @@ import readline from "node:readline";
 import {
   buildNimConstructorOptions,
   buildConversationId,
+  collectReadReceiptBatches,
   isP2pApplicantAllowed,
   normalizeTarget,
   parseBridgeConfig,
@@ -356,6 +357,7 @@ async function handleConnect(id, params) {
             ),
           );
         }
+        sendReadReceipts(messageService, messages);
       } catch (error) {
         console.error(
           `[nim] inbound message handling failed — error: ${error instanceof Error ? error.message : String(error)}`,
@@ -384,6 +386,43 @@ async function handleConnect(id, params) {
       account: config.credentials.account,
     }),
   );
+}
+
+function sendReadReceipts(messageService, messages) {
+  const { p2p, teamBatches } = collectReadReceiptBatches(messages);
+  for (const message of p2p) {
+    if (typeof messageService.sendP2PMessageReceipt !== "function") {
+      break;
+    }
+    try {
+      Promise.resolve(messageService.sendP2PMessageReceipt(message)).catch((error) => {
+        console.warn(
+          `[nim] send p2p read receipt failed — error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    } catch (error) {
+      console.warn(
+        `[nim] send p2p read receipt failed — error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  if (typeof messageService.sendTeamMessageReceipts !== "function") {
+    return;
+  }
+  for (const batch of teamBatches) {
+    try {
+      Promise.resolve(messageService.sendTeamMessageReceipts(batch)).catch((error) => {
+        console.warn(
+          `[nim] send team read receipts failed — error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    } catch (error) {
+      console.warn(
+        `[nim] send team read receipts failed — error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 }
 
 async function handleDisconnect(id) {
