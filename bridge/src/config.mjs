@@ -368,6 +368,41 @@ export function normalizeTopicRefer(topicRefer) {
   };
 }
 
+export function normalizeConnectionStatus(kind, value = null) {
+  if (kind === "login") {
+    const code = typeof value === "object" && value !== null
+      ? Number(value.code ?? value.status)
+      : Number(value);
+    if (code === 1) {
+      return { status: "connected", reason: "login" };
+    }
+    if (code === 0) {
+      return { status: "logout", reason: "login_status" };
+    }
+    if (code === 2) {
+      return { status: "connecting", reason: "login_status" };
+    }
+    return { status: "unknown", reason: "login_status", raw: value ?? null };
+  }
+  if (kind === "kickout") {
+    return { status: "kickout", reason: detailMessage(value) };
+  }
+  if (kind === "disconnected") {
+    return { status: "disconnected", reason: detailMessage(value) };
+  }
+  return { status: "unknown", reason: String(kind ?? "unknown"), raw: value ?? null };
+}
+
+function detailMessage(value) {
+  if (value instanceof Error) {
+    return value.message;
+  }
+  if (value && typeof value === "object") {
+    return String(value.reasonDesc ?? value.reason ?? value.message ?? value.desc ?? "unknown");
+  }
+  return String(value ?? "unknown");
+}
+
 function extractInboundText(messageType, text, attachment) {
   const content = String(text ?? "");
   if (content.trim()) {

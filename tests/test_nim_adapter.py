@@ -203,6 +203,34 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual("team", bridge.sent[0]["session_type"])
 
+    async def test_connection_events_update_connected_state(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        self.assertTrue(adapter.connected)
+        assert bridge.event_handler is not None
+
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "connection",
+                "payload": {"status": "disconnected", "reason": "network"},
+            }
+        )
+        self.assertFalse(adapter.connected)
+
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "connection",
+                "payload": {"status": "connected", "reason": "login"},
+            }
+        )
+        self.assertTrue(adapter.connected)
+
     async def test_send_routes_qchat_targets_to_qchat_bridge(self) -> None:
         bridge = FakeBridge()
         adapter = NimAdapter(

@@ -189,6 +189,9 @@ class NimAdapter(BasePlatformAdapter):
         return ChatInfo(chat_id=chat_id, chat_type=ChatType.DIRECT.value)
 
     async def _on_bridge_event(self, envelope: dict[str, Any]) -> None:
+        if envelope.get("event") == "connection":
+            self._handle_connection_event(dict(envelope.get("payload") or {}))
+            return
         if envelope.get("event") != "message":
             return
         payload = dict(envelope.get("payload") or {})
@@ -201,6 +204,13 @@ class NimAdapter(BasePlatformAdapter):
             chat_name=event.source.chat_name,
         )
         await self.handle_message(event)
+
+    def _handle_connection_event(self, payload: dict[str, Any]) -> None:
+        status = str(payload.get("status") or "")
+        if status == "connected":
+            self.connected = True
+        elif status in {"logout", "kickout", "disconnected"}:
+            self.connected = False
 
     def _should_ignore(self, payload: dict[str, Any]) -> bool:
         if payload.get("from_self"):

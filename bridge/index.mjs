@@ -8,6 +8,7 @@ import {
   collectReadReceiptBatches,
   isP2pApplicantAllowed,
   normalizeTarget,
+  normalizeConnectionStatus,
   parseBridgeConfig,
   ReplyMessageCache,
   splitMessageIntoChunks,
@@ -32,6 +33,7 @@ import {
 let runtime = null;
 let qchatRuntime = null;
 let friendRuntime = null;
+let connectionRuntime = null;
 
 function writeStderr(args) {
   const text = args
@@ -59,6 +61,12 @@ function emit(message) {
 }
 
 async function cleanupRuntime() {
+  if (connectionRuntime) {
+    try {
+      connectionRuntime.stop();
+    } catch {}
+    connectionRuntime = null;
+  }
   if (friendRuntime) {
     try {
       await friendRuntime.stop();
@@ -84,6 +92,43 @@ async function cleanupRuntime() {
   } catch {}
 
   runtime = null;
+}
+
+function setupConnectionRuntime(loginService) {
+  if (!loginService?.on) {
+    return null;
+  }
+
+  const emitConnection = (payload) => {
+    emit(eventMessage("connection", payload));
+  };
+  const loginStatusHandler = (status) => {
+    emitConnection(normalizeConnectionStatus("login", status));
+  };
+  const kickedOfflineHandler = (detail) => {
+    emitConnection(normalizeConnectionStatus("kickout", detail));
+  };
+  const disconnectedHandler = (error) => {
+    emitConnection(normalizeConnectionStatus("disconnected", error));
+  };
+
+  loginService.on("onLoginStatus", loginStatusHandler);
+  loginService.on("onKickedOffline", kickedOfflineHandler);
+  loginService.on("onDisconnected", disconnectedHandler);
+
+  return {
+    stop: () => {
+      try {
+        loginService.off?.("onLoginStatus", loginStatusHandler);
+      } catch {}
+      try {
+        loginService.off?.("onKickedOffline", kickedOfflineHandler);
+      } catch {}
+      try {
+        loginService.off?.("onDisconnected", disconnectedHandler);
+      } catch {}
+    },
+  };
 }
 
 function setupFriendRuntime(nim, config) {
@@ -382,6 +427,7 @@ async function handleConnect(id, params) {
     replyCache,
     config,
   };
+  connectionRuntime = setupConnectionRuntime(loginService);
   friendRuntime = setupFriendRuntime(nim, config);
   qchatRuntime = await setupQChatRuntime(nim, config);
 

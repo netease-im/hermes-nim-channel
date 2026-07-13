@@ -168,6 +168,9 @@ class HermesNimAdapter(BasePlatformAdapter):
         }
 
     async def _on_bridge_event(self, envelope: dict[str, Any]) -> None:
+        if envelope.get("event") == "connection":
+            self._handle_connection_event(dict(envelope.get("payload") or {}))
+            return
         if envelope.get("event") != "message":
             return
         payload = dict(envelope.get("payload") or {})
@@ -176,6 +179,13 @@ class HermesNimAdapter(BasePlatformAdapter):
         event = await self._to_message_event(payload)
         self._chat_names[event.source.chat_id] = event.source.chat_name
         await self.handle_message(event)
+
+    def _handle_connection_event(self, payload: dict[str, Any]) -> None:
+        status = str(payload.get("status") or "")
+        if status == "connected":
+            self._mark_connected()
+        elif status in {"logout", "kickout", "disconnected"}:
+            self._mark_disconnected()
 
     def _should_ignore(self, payload: dict[str, Any]) -> bool:
         if payload.get("from_self"):

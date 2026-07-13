@@ -6,6 +6,7 @@ import {
   isP2pApplicantAllowed,
   collectReadReceiptBatches,
   normalizeTarget,
+  normalizeConnectionStatus,
   normalizeTopicRefer,
   parseBridgeConfig,
   ReplyMessageCache,
@@ -135,6 +136,25 @@ test("p2p applicant policy supports open allowlist and disabled modes", () => {
   );
   assert.equal(isP2pApplicantAllowed({ policy: "disabled", applicantId: "alice" }), false);
   assert.equal(isP2pApplicantAllowed({ policy: "open", applicantId: "" }), false);
+});
+
+test("connection status normalization maps SDK lifecycle callbacks", () => {
+  assert.deepEqual(normalizeConnectionStatus("login", 1), {
+    status: "connected",
+    reason: "login",
+  });
+  assert.deepEqual(normalizeConnectionStatus("login", 0), {
+    status: "logout",
+    reason: "login_status",
+  });
+  assert.deepEqual(normalizeConnectionStatus("kickout", { reasonDesc: "other login" }), {
+    status: "kickout",
+    reason: "other login",
+  });
+  assert.deepEqual(normalizeConnectionStatus("disconnected", new Error("network")), {
+    status: "disconnected",
+    reason: "network",
+  });
 });
 
 test("read receipt batches include only online p2p and team messages", () => {
