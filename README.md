@@ -2,11 +2,7 @@
 
 `hermes-nim-channel` 是 Hermes Agent 的网易云信 IM（NIM）平台插件。它通过 Python 适配 Hermes 插件接口，通过 Node.js bridge 调用 `@yxim/nim-bot`，让 `hermes-agent` 可以经由 NIM SDK 收发消息。
 
-本项目的 NIM 行为基线对齐 `openclaw-nim-channel`：
-
-- Hermes Agent: `https://github.com/NousResearch/hermes-agent`
-- OpenClaw: `https://github.com/openclaw/openclaw`
-- 参考实现：`openclaw-nim-channel`
+适配的 Hermes Agent 项目：`https://github.com/NousResearch/hermes-agent`
 
 ## 功能能力
 
