@@ -9,6 +9,7 @@ from unittest import mock
 from hermes_nim_channel.config import (
     PlatformConfig,
     _resolve_bridge_command,
+    load_nim_instances,
     load_nim_config,
     parse_nim_token,
 )
@@ -195,6 +196,64 @@ class NimConfigTests(unittest.TestCase):
             str(Path(__file__).resolve().parent.parent / "bridge" / "index.mjs"),
             command[1],
         )
+
+    def test_load_nim_instances_supports_multiple_enabled_accounts(self) -> None:
+        instances = load_nim_instances(
+            PlatformConfig(
+                extra={
+                    "instances": [
+                        {
+                            "enabled": True,
+                            "nimToken": "app|bot-a|secret-a",
+                            "p2p": {"policy": "allowlist", "allowFrom": ["alice"]},
+                        },
+                        {
+                            "enabled": True,
+                            "appKey": "app",
+                            "account": "bot-b",
+                            "token": "secret-b",
+                            "p2p": {"policy": "open"},
+                            "qchat": {"policy": "allowlist", "allowFrom": ["server|channel"]},
+                        },
+                    ]
+                }
+            ),
+            {},
+        )
+
+        self.assertEqual(["app:bot-a", "app:bot-b"], [item.resolved_account_id() for item in instances])
+        self.assertEqual("allowlist", instances[0].p2p_policy)
+        self.assertEqual(["alice"], instances[0].p2p_allow_from)
+        self.assertEqual("open", instances[1].p2p_policy)
+        self.assertEqual(["server|channel"], instances[1].qchat_allow_from)
+
+    def test_load_nim_instances_rejects_duplicates_and_limits(self) -> None:
+        with self.assertRaises(ValueError):
+            load_nim_instances(
+                PlatformConfig(
+                    extra={
+                        "instances": [
+                            {"enabled": True, "nimToken": "app|bot|secret-a"},
+                            {"enabled": True, "nimToken": "app|bot|secret-b"},
+                        ]
+                    }
+                ),
+                {},
+            )
+        with self.assertRaises(ValueError):
+            load_nim_instances(
+                PlatformConfig(
+                    extra={
+                        "instances": [
+                            {"enabled": True, "nimToken": "app|bot-1|secret"},
+                            {"enabled": True, "nimToken": "app|bot-2|secret"},
+                            {"enabled": True, "nimToken": "app|bot-3|secret"},
+                            {"enabled": True, "nimToken": "app|bot-4|secret"},
+                        ]
+                    }
+                ),
+                {},
+            )
 
 
 if __name__ == "__main__":

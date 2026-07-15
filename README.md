@@ -7,6 +7,7 @@
 ## 功能能力
 
 - 支持 P2P、群、超大群、QChat 的消息收发路由。
+- 支持最多 3 个 NIM 账号实例，每个实例独立登录、独立策略、独立 bridge 进程。
 - 默认使用 NIM Bot SDK `aiBot: 2` 登录，支持可选 legacy 登录。
 - 支持 P2P、群、QChat 访问策略：`open`、`allowlist`、`disabled`。
 - 群和 QChat 消息按 @/强推触发后才进入 Hermes。
@@ -74,6 +75,37 @@ export NIM_ACCOUNT='<bot-accid>'
 export NIM_TOKEN='<token>'
 ```
 
+多实例可使用 `NIM_INSTANCES` 配置 JSON 数组，最多 3 个实例。每个实例会派生 `accountId=<app-key>:<accid>`，并独立维护连接和访问策略。
+
+```bash
+export NIM_INSTANCES='[
+  {
+    "enabled": true,
+    "nimToken": "<app-key>|<bot-accid-1>|<token-1>",
+    "p2p": { "policy": "allowlist", "allowFrom": ["<accid-1>"] },
+    "team": { "policy": "open" },
+    "qchat": { "policy": "disabled" }
+  },
+  {
+    "enabled": true,
+    "nimToken": "<app-key>|<bot-accid-2>|<token-2>",
+    "p2p": { "policy": "open" },
+    "team": { "policy": "allowlist", "allowFrom": ["<team-id>"] },
+    "qchat": { "policy": "allowlist", "allowFrom": ["<server-id>|<channel-id>"] }
+  }
+]'
+```
+
+多实例出站时需要指定实例。入站消息会自动带上实例前缀，直接在 WebUI 中回复即可；手动发送时使用：
+
+```text
+acct:<url-encoded-account-id>:user:<accid>
+acct:<url-encoded-account-id>:team:<teamId>
+acct:<url-encoded-account-id>:qchat:<serverId>:<channelId>
+```
+
+例如 `accountId` 为 `app:bot-a` 时，目标写作 `acct:app%3Abot-a:user:<accid>`。
+
 访问策略默认是 `open`，如需限制可显式配置：
 
 ```bash
@@ -127,6 +159,7 @@ export NIM_AUTO_INSTALL_BRIDGE='false'
 - P2P：`user:<accid>`。
 - 群/超大群：`team:<teamId>`。
 - QChat：`qchat:<serverId>:<channelId>`。
+- 多实例：在上述目标前增加 `acct:<url-encoded-account-id>:` 前缀。
 
 ## 运行行为
 
@@ -153,7 +186,7 @@ node --test bridge/test/*.test.mjs
 
 当前基线：
 
-- Python：44 个测试通过。
+- Python：48 个测试通过。
 - Node：59 个测试通过。
 
 运行态排查命令：
@@ -178,6 +211,7 @@ ps -ef | rg 'gateway run|bridge/index.mjs' | rg -v rg
 - [ ] 入站媒体会生成 `media_urls` 和 `media_types`。
 - [ ] P2P/群出站图片、文件、音频、视频可用。
 - [ ] QChat 文本收发符合配置策略。
+- [ ] 多实例配置下，不同账号各自登录，入站会话带 `acct:<url-encoded-account-id>:` 前缀，出站回复回到正确账号。
 - [ ] WebUI 会话标题符合 `云信·单聊·<昵称>` 和 `云信·群聊·<群名>`。
 
 ## 目录结构

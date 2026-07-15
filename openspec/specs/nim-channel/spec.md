@@ -29,6 +29,30 @@ The system SHALL expose a `nim` platform adapter configuration that resolves cre
 - **THEN** the adapter resolves credentials from `app_key`, `account`, and `token`
 - **AND** the adapter treats the platform as not configured if any required field is missing
 
+### Requirement: NIM Multi-Instance Configuration
+The system SHALL support up to three NIM account instances inside one Hermes `nim` platform adapter.
+
+#### Scenario: Multiple enabled instances connect independently
+- **WHEN** the operator provides an `instances` array or `NIM_INSTANCES` JSON array with two enabled credential entries
+- **THEN** the adapter starts one independent bridge process per configured instance
+- **AND** each bridge logs in with the credentials for its own instance
+- **AND** one failed instance does not prevent other instances from staying connected
+
+#### Scenario: Instance account IDs are derived
+- **WHEN** an instance resolves credentials with app key `appKey1` and account `bot001`
+- **THEN** the adapter derives the instance account ID as `appKey1:bot001`
+- **AND** duplicate derived account IDs are rejected during configuration parsing
+
+#### Scenario: Inbound multi-instance messages are routable
+- **WHEN** the adapter receives an inbound message for a configured instance
+- **THEN** it adds `nim_account_id` metadata with the derived account ID
+- **AND** when more than one instance is configured, it prefixes the Hermes chat ID with `acct:<url-encoded-account-id>:`
+
+#### Scenario: Outbound multi-instance messages select the correct bridge
+- **WHEN** Hermes sends to `acct:<url-encoded-account-id>:user:<accid>` or passes `nim_account_id` metadata
+- **THEN** the adapter uses the bridge for that account ID
+- **AND** it strips the `acct:` prefix before sending the target to the Node bridge
+
 ### Requirement: Bridge-Backed Connection
 The system SHALL start a Node bridge process for NIM transport and connect to NetEase IM by logging in as an AI Bot.
 

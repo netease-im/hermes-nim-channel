@@ -16,6 +16,10 @@ optional_env:
     description: "NIM App Key when not using NIM_CREDENTIALS"
     prompt: "NIM App Key"
     password: false
+  - name: NIM_INSTANCES
+    description: "JSON array of up to 3 NIM instance configs"
+    prompt: "NIM instances JSON"
+    password: true
   - name: NIM_ACCOUNT
     description: "NIM account when not using NIM_CREDENTIALS"
     prompt: "NIM account"

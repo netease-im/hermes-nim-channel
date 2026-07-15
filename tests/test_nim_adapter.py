@@ -15,6 +15,7 @@ class FakeBridge:
     def __init__(self) -> None:
         self.started = False
         self.stopped = False
+        self.config = None
         self.sent: list[dict[str, str]] = []
         self.stream_sent: list[dict[str, object]] = []
         self.edits: list[dict[str, object]] = []
@@ -24,6 +25,7 @@ class FakeBridge:
 
     async def start(self, config, *, event_handler=None) -> None:
         self.started = True
+        self.config = config
         self.event_handler = event_handler
 
     async def stop(self) -> None:
@@ -172,6 +174,95 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, len(accepted))
         self.assertEqual("allowed-user", accepted[0].source.user_id)
+
+    async def test_multi_instance_routes_inbound_and_outbound_by_account_prefix(self) -> None:
+        bridges = [FakeBridge(), FakeBridge()]
+
+        def bridge_factory(config):
+            return bridges[0] if config.credentials.account == "bot-a" else bridges[1]
+
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "instances": [
+                        {
+                            "enabled": True,
+                            "nimToken": "app|bot-a|secret-a",
+                            "p2p": {"policy": "allowlist", "allowFrom": ["alice"]},
+                        },
+                        {
+                            "enabled": True,
+                            "nimToken": "app|bot-b|secret-b",
+                            "p2p": {"policy": "open"},
+                        },
+                    ]
+                }
+            ),
+            bridge_factory=bridge_factory,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        self.assertTrue(await adapter.connect())
+        self.assertTrue(all(bridge.started for bridge in bridges))
+        assert bridges[0].event_handler is not None
+        assert bridges[1].event_handler is not None
+
+        await bridges[0].event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "p2p",
+                    "sender_id": "alice",
+                    "target_id": "bot-a",
+                    "text": "hello a",
+                    "message_id": "m-a",
+                    "message_type": "text",
+                },
+            }
+        )
+        await bridges[1].event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "p2p",
+                    "sender_id": "bob",
+                    "target_id": "bot-b",
+                    "text": "hello b",
+                    "message_id": "m-b",
+                    "message_type": "text",
+                },
+            }
+        )
+
+        self.assertEqual(["acct:app%3Abot-a:user:alice", "acct:app%3Abot-b:user:bob"], [e.source.chat_id for e in accepted])
+        self.assertEqual("app:bot-a", accepted[0].raw["metadata"]["nim_account_id"])
+        self.assertEqual("app:bot-b", accepted[1].raw["metadata"]["nim_account_id"])
+
+        result = await adapter.send("acct:app%3Abot-b:user:bob", "reply b")
+        self.assertTrue(result.success)
+        self.assertEqual([], bridges[0].sent)
+        self.assertEqual("user:bob", bridges[1].sent[0]["chat_id"])
+
+    async def test_multi_instance_blocks_ambiguous_unprefixed_outbound(self) -> None:
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "instances": [
+                        {"enabled": True, "nimToken": "app|bot-a|secret-a"},
+                        {"enabled": True, "nimToken": "app|bot-b|secret-b"},
+                    ]
+                }
+            ),
+            bridge_factory=lambda _config: FakeBridge(),
+        )
+        self.assertTrue(await adapter.connect())
+
+        result = await adapter.send("user:alice", "ambiguous")
+
+        self.assertFalse(result.success)
+        self.assertEqual("no NIM instance is connected for target", result.error)
 
     async def test_direct_message_explicit_p2p_policy(self) -> None:
         bridge = FakeBridge()
