@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Any, Awaitable, Callable
 
@@ -17,6 +19,108 @@ class BridgeError(RuntimeError):
     pass
 
 
+def _env_enabled(value: str | None, *, default: bool = True) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _bridge_dir_for_command(command: Sequence[str], cwd: str | None = None) -> Path | None:
+    if not command:
+        return None
+    executable = Path(command[0]).name.lower()
+    if executable not in {"node", "node.exe"}:
+        return None
+
+    base_dir = Path(cwd or Path.cwd())
+    script: Path | None = None
+    for arg in command[1:]:
+        if arg.startswith("-"):
+            continue
+        candidate = Path(arg)
+        if candidate.name == "index.mjs":
+            script = candidate if candidate.is_absolute() else base_dir / candidate
+            break
+    if script is None:
+        return None
+
+    bridge_dir = script.resolve().parent
+    if (bridge_dir / "package.json").exists():
+        return bridge_dir
+    return None
+
+
+def _bridge_dependencies_installed(bridge_dir: Path) -> bool:
+    return (bridge_dir / "node_modules" / "@yxim" / "nim-bot" / "package.json").exists()
+
+
+async def ensure_bridge_dependencies(
+    command: Sequence[str],
+    *,
+    cwd: str | None = None,
+    environ: dict[str, str] | None = None,
+) -> None:
+    env = environ if environ is not None else os.environ
+    if not _env_enabled(env.get("NIM_AUTO_INSTALL_BRIDGE"), default=True):
+        return
+
+    bridge_dir = _bridge_dir_for_command(command, cwd)
+    if bridge_dir is None or _bridge_dependencies_installed(bridge_dir):
+        return
+
+    npm = shutil.which("npm")
+    if not npm:
+        raise BridgeError(
+            "NIM bridge dependencies are not installed and npm is not available. "
+            f"Install Node.js/npm, then run: cd {bridge_dir} && npm install --omit=dev"
+        )
+
+    timeout_raw = env.get("NIM_BRIDGE_INSTALL_TIMEOUT_SEC", "180")
+    try:
+        timeout = max(1.0, float(timeout_raw))
+    except (TypeError, ValueError):
+        timeout = 180.0
+
+    commands: list[list[str]]
+    common_args = ["--omit=dev", "--no-audit", "--no-fund", "--progress=false"]
+    if (bridge_dir / "package-lock.json").exists():
+        commands = [["ci", *common_args], ["install", *common_args]]
+    else:
+        commands = [["install", *common_args]]
+
+    last_output = ""
+    for args in commands:
+        sys.stderr.write(f"NIM bridge dependencies missing; running npm {' '.join(args)} in {bridge_dir}\n")
+        process = await asyncio.create_subprocess_exec(
+            npm,
+            *args,
+            cwd=str(bridge_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise BridgeError(
+                f"NIM bridge dependency install timed out after {timeout:.0f}s. "
+                f"Run manually: cd {bridge_dir} && npm install --omit=dev"
+            ) from exc
+
+        output = (stdout + stderr).decode("utf-8", errors="replace").strip()
+        last_output = output
+        if process.returncode == 0 and _bridge_dependencies_installed(bridge_dir):
+            return
+
+    detail = f"\n{last_output[-2000:]}" if last_output else ""
+    raise BridgeError(
+        "NIM bridge dependency install failed. "
+        f"Run manually: cd {bridge_dir} && npm install --omit=dev{detail}"
+    )
+
+
 class NodeBridgeProcess:
     def __init__(
         self,
@@ -24,10 +128,12 @@ class NodeBridgeProcess:
         *,
         cwd: str | None = None,
         request_timeout: float = 10.0,
+        stop_timeout: float = 3.0,
     ) -> None:
         self._command = list(command)
         self._cwd = cwd or str(Path.cwd())
         self._request_timeout = request_timeout
+        self._stop_timeout = stop_timeout
         self._process: asyncio.subprocess.Process | None = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._next_id = 0
@@ -44,6 +150,7 @@ class NodeBridgeProcess:
         if self._process is not None:
             return
         self._event_handler = event_handler
+        await ensure_bridge_dependencies(self._command, cwd=self._cwd)
         self._process = await asyncio.create_subprocess_exec(
             *self._command,
             cwd=self._cwd,
@@ -53,25 +160,53 @@ class NodeBridgeProcess:
         )
         self._stdout_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
-        response = await self.request("connect", {"config": config.to_bridge_payload()})
-        if response.get("status") != "ok":
-            raise BridgeError(response.get("error", "bridge connect failed"))
+        try:
+            response = await self.request("connect", {"config": config.to_bridge_payload()})
+            if response.get("status") != "ok":
+                raise BridgeError(response.get("error", "bridge connect failed"))
+        except Exception:
+            await self._cleanup_process(kill=True)
+            raise
 
     async def stop(self) -> None:
-        process = self._process
-        if process is None:
+        if self._process is None:
             return
+        process = self._process
         try:
             await self.request("disconnect", {})
         except Exception:
             pass
+        await self._cleanup_process(kill=False)
+
+    async def _cleanup_process(self, *, kill: bool) -> None:
+        process = self._process
+        if process is None:
+            return
         if process.stdin is not None and not process.stdin.is_closing():
             process.stdin.close()
-        await process.wait()
+            try:
+                await process.stdin.wait_closed()
+            except Exception:
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=0 if kill else self._stop_timeout)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            if process.returncode is None:
+                process.kill()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=self._stop_timeout)
+            except Exception:
+                pass
         for task in (self._stdout_task, self._stderr_task):
             if task is not None and not task.done():
                 task.cancel()
+        for future in self._pending.values():
+            if not future.done():
+                future.cancel()
+        self._pending.clear()
         self._process = None
+        self._stdout_task = None
+        self._stderr_task = None
 
     async def health(self) -> dict[str, Any]:
         response = await self.request("health", {})

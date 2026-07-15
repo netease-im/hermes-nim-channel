@@ -120,3 +120,11 @@ optional_env:
     description: "Override the bridge command"
     prompt: "Bridge command"
     password: false
+  - name: NIM_AUTO_INSTALL_BRIDGE
+    description: "Auto-install Node bridge dependencies on first start"
+    prompt: "Auto-install bridge dependencies"
+    password: false
+  - name: NIM_BRIDGE_INSTALL_TIMEOUT_SEC
+    description: "Timeout in seconds for automatic bridge dependency install"
+    prompt: "Bridge install timeout"
+    password: false

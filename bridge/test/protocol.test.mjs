@@ -13,6 +13,7 @@ import {
   inboundBatchKey,
   normalizeTarget,
   normalizeConnectionStatus,
+  normalizeSendResult,
   normalizeTopicInfo,
   normalizeTopicRefer,
   parseBridgeConfig,
@@ -25,7 +26,9 @@ import {
   sendMediaMaybeTopicReply,
   sendStreamTextMessage,
   sendTextReplyMessage,
+  shouldDispatchInboundMessage,
   splitMessageIntoChunks,
+  stripLeadingMentionPrefix,
   toInboundMessage,
 } from "../src/config.mjs";
 import {
@@ -82,6 +85,27 @@ test("config parser accepts inbound batching and quick comment controls", () => 
     enabled: true,
     index: 72,
     ttlMs: 5000,
+  });
+});
+
+test("config parser falls back or clamps invalid numeric options", () => {
+  const parsed = parseBridgeConfig({
+    nim_token: "app|bot|secret",
+    media_max_mb: "bad",
+    text_chunk_limit: 0,
+    inbound_debounce_ms: -10,
+    quick_comment: {
+      index: 0,
+      ttl_ms: "bad",
+    },
+  });
+  assert.equal(parsed.mediaMaxMb, 30);
+  assert.equal(parsed.textChunkLimit, 1);
+  assert.equal(parsed.inboundDebounceMs, 0);
+  assert.deepEqual(parsed.quickComment, {
+    enabled: false,
+    index: 1,
+    ttlMs: 30000,
   });
 });
 
@@ -206,6 +230,7 @@ test("read receipt batches include only online p2p and team messages", () => {
     batches.teamBatches.map((batch) => batch.map((message) => message.id)),
     [["team-online", "super-online"]],
   );
+  assert.equal(batches.skipped, 2);
 });
 
 test("team read receipt batches are bounded", () => {
@@ -219,6 +244,14 @@ test("team read receipt batches are bounded", () => {
   assert.equal(batches.teamBatches.length, 2);
   assert.equal(batches.teamBatches[0].length, 50);
   assert.equal(batches.teamBatches[1].length, 1);
+  assert.equal(batches.skipped, 0);
+});
+
+test("inbound dispatch only accepts online messages", () => {
+  assert.equal(shouldDispatchInboundMessage({ messageSource: 1 }), true);
+  assert.equal(shouldDispatchInboundMessage({ messageSource: 2 }), false);
+  assert.equal(shouldDispatchInboundMessage({ messageSource: 3 }), false);
+  assert.equal(shouldDispatchInboundMessage({}), false);
 });
 
 test("reply message cache indexes server and client message ids", () => {
@@ -232,6 +265,7 @@ test("reply message cache indexes server and client message ids", () => {
   assert.equal(cache.get("server-1"), message);
   assert.equal(cache.get("client-1"), message);
   assert.equal(cache.get("missing"), null);
+  assert.equal(cache.getRefer("server-1"), null);
 });
 
 test("reply message cache is bounded and ignores empty ids", () => {
@@ -248,6 +282,52 @@ test("reply message cache is bounded and ignores empty ids", () => {
   assert.equal(cache.get("server-1"), null);
   assert.equal(cache.get("server-2"), second);
   assert.equal(cache.get("server-3"), third);
+});
+
+test("reply message cache stores message refers when derivable", () => {
+  const cache = new ReplyMessageCache(10);
+  const message = {
+    senderId: "alice",
+    receiverId: "bot",
+    messageClientId: "client-1",
+    messageServerId: "server-1",
+    conversationId: "0|1|alice",
+    createTime: 123,
+    conversationType: 1,
+  };
+  cache.add(message);
+
+  assert.deepEqual(cache.getRefer("server-1"), deriveMessageRefer(message));
+  assert.deepEqual(cache.getRefer("client-1"), deriveMessageRefer(message));
+});
+
+test("reply message cache evicts message refers with messages", () => {
+  const cache = new ReplyMessageCache(2);
+  const first = {
+    senderId: "alice",
+    receiverId: "bot",
+    messageClientId: "client-1",
+    messageServerId: "server-1",
+    conversationId: "0|1|alice",
+    createTime: 123,
+    conversationType: 1,
+  };
+  const second = {
+    senderId: "bob",
+    receiverId: "bot",
+    messageClientId: "client-2",
+    messageServerId: "server-2",
+    conversationId: "0|1|bob",
+    createTime: 124,
+    conversationType: 1,
+  };
+
+  cache.add(first);
+  cache.add(second);
+
+  assert.equal(cache.get("server-1"), null);
+  assert.equal(cache.getRefer("server-1"), null);
+  assert.deepEqual(cache.getRefer("server-2"), deriveMessageRefer(second));
 });
 
 test("text chunking prefers newline and space boundaries", () => {
@@ -313,12 +393,71 @@ test("inbound conversion extracts mention metadata", async () => {
       pushConfig: {
         forcePushAccountIds: ["bot"],
       },
+      createTime: 123,
+      conversationType: 2,
+      messageSource: 1,
     },
     "bot",
   );
   assert.equal(payload.session_type, "team");
+  assert.equal(payload.message_source, 1);
   assert.equal(payload.mentioned, true);
+  assert.deepEqual(payload.message_refer, {
+    senderId: "alice",
+    receiverId: "team-1",
+    messageClientId: "client-1",
+    messageServerId: "server-1",
+    conversationId: "0|2|team-1",
+    createTime: 123,
+    conversationType: 2,
+  });
   assert.equal(eventMessage("message", payload).event, "message");
+});
+
+test("inbound conversion accepts top-level force push account ids", async () => {
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|2|team-1",
+      senderId: "alice",
+      receiverId: "team-1",
+      messageType: 0,
+      messageClientId: "client-1",
+      messageServerId: "server-1",
+      text: "hello",
+      forcePushAccountIds: ["bot"],
+    },
+    "bot",
+  );
+
+  assert.deepEqual(payload.force_push_account_ids, ["bot"]);
+  assert.equal(payload.mentioned, true);
+});
+
+test("inbound conversion strips leading group mention from text", async () => {
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|2|team-1",
+      senderId: "alice",
+      receiverId: "team-1",
+      messageType: 0,
+      messageClientId: "client-mention-strip",
+      messageServerId: "server-mention-strip",
+      text: "@阿祖，收手吧 翻译一下这句话",
+      pushConfig: {
+        forcePushAccountIds: ["bot"],
+      },
+      messageSource: 1,
+    },
+    "bot",
+  );
+
+  assert.equal(payload.mentioned, true);
+  assert.equal(payload.text, "翻译一下这句话");
+});
+
+test("leading mention stripper handles multiple mention tokens", () => {
+  assert.equal(stripLeadingMentionPrefix("@bot @helper hello"), "hello");
+  assert.equal(stripLeadingMentionPrefix("hello @bot"), "hello @bot");
 });
 
 test("inbound team conversion resolves conversation name", async () => {
@@ -343,8 +482,36 @@ test("inbound team conversion resolves conversation name", async () => {
     "bot",
     nim,
   );
-  assert.equal(payload.conversation_name, "Engineering");
+  assert.equal(payload.conversation_name, "云信·群聊·Engineering");
   assert.deepEqual(calls, [["team-2", 1]]);
+});
+
+test("inbound p2p conversion resolves sender display name", async () => {
+  const calls = [];
+  const nim = {
+    V2NIMUserService: {
+      async getUserList(accountIds) {
+        calls.push(accountIds);
+        return [{ name: "Alice" }];
+      },
+    },
+  };
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|1|alice",
+      senderId: "alice",
+      receiverId: "bot",
+      messageType: 0,
+      messageClientId: "client-p2p-name",
+      text: "hello",
+    },
+    "bot",
+    nim,
+  );
+
+  assert.equal(payload.sender_name, "Alice");
+  assert.equal(payload.conversation_name, "云信·单聊·Alice");
+  assert.deepEqual(calls, [["alice"]]);
 });
 
 test("inbound conversion preserves thread and topic metadata", async () => {
@@ -375,6 +542,56 @@ test("inbound conversion preserves thread and topic metadata", async () => {
   assert.deepEqual(payload.thread_reply, {
     messageClientId: "root-client",
   });
+});
+
+test("inbound conversion resolves reply context from thread reply", async () => {
+  const calls = [];
+  const nim = {
+    V2NIMMessageService: {
+      async getMessageListByRefers(refers) {
+        calls.push(refers);
+        return [{
+          conversationId: "0|1|alice",
+          senderId: "bot",
+          senderName: "Nim Bot",
+          receiverId: "alice",
+          messageType: 0,
+          messageClientId: "source-client",
+          messageServerId: "source-server",
+          text: "source text",
+        }];
+      },
+    },
+  };
+  const threadReply = {
+    messageClientId: "source-client",
+    messageServerId: "source-server",
+    conversationId: "0|1|alice",
+    createTime: 123,
+    conversationType: 1,
+  };
+
+  const payload = await toInboundMessage(
+    {
+      conversationId: "0|1|alice",
+      senderId: "alice",
+      receiverId: "bot",
+      messageType: 0,
+      messageClientId: "reply-client",
+      messageServerId: "reply-server",
+      text: "reply text",
+      threadReply,
+    },
+    "bot",
+    nim,
+  );
+
+  assert.deepEqual(calls, [[threadReply]]);
+  assert.equal(payload.reply_to_message_id, "source-server");
+  assert.equal(payload.reply_to_text, "source text");
+  assert.equal(payload.reply_to_author_id, "bot");
+  assert.equal(payload.reply_to_author_name, "Nim Bot");
+  assert.equal(payload.reply_to_is_own_message, true);
 });
 
 test("inbound conversion enriches topic info when sdk can resolve it", async () => {
@@ -880,6 +1097,30 @@ test("stream sender selects reply stream stream and fallback modes", async () =>
   assert.deepEqual(fallbackSent, {
     mode: "fallback",
     result: { message_id: "fallback-server" },
+  });
+});
+
+test("send result normalization supports sdk and wrapper shapes", () => {
+  assert.deepEqual(normalizeSendResult({
+    message: {
+      messageServerId: "server-1",
+      messageClientId: "client-1",
+    },
+  }), {
+    message_id: "server-1",
+    client_message_id: "client-1",
+  });
+  assert.deepEqual(normalizeSendResult({
+    success: true,
+    msgId: "server-2",
+    clientMsgId: "client-2",
+    baseMessage: {
+      messageServerId: "server-2",
+      messageClientId: "client-2",
+    },
+  }), {
+    message_id: "server-2",
+    client_message_id: "client-2",
   });
 });
 

@@ -1,21 +1,36 @@
 # Hermes NIM Channel
 
-`hermes-nim-channel` is a standalone Hermes Agent platform plugin project for NetEase IM (NIM, 网易云信). Its purpose is to let `hermes-agent` send and receive messages through the official NIM Bot SDK.
+`hermes-nim-channel` is a Hermes Agent platform plugin for NetEase Yunxin IM (NIM, 网易云信). It lets `hermes-agent` receive and send messages through the NIM Bot SDK via a Python Hermes adapter and a Node.js bridge backed by `@yxim/nim-bot`.
 
-This repository uses `openclaw-nim-channel` as its NIM behavior baseline:
+The NIM behavior baseline is `openclaw-nim-channel`:
 
 - Hermes host: `https://github.com/NousResearch/hermes-agent`
-- Reference NIM channel: `https://github.com/openclaw/openclaw`
+- Reference project: `https://github.com/openclaw/openclaw`
 - Local reference implementation: `/Users/xumengxiang/Documents/00.NetEase/05.IM/openclaw-nim-channel`
 
-## Project Direction
+## Current Capabilities
 
-Hermes recommends third-party messaging integrations through the plugin path (`plugin.yaml` + `adapter.py`), while the proven NIM implementation already exists as the OpenClaw channel plugin. This repository is therefore initialized as:
+- P2P, team, superTeam, and QChat inbound/outbound routing.
+- NIM Bot SDK login with `aiBot: 2` by default, plus optional legacy login.
+- P2P/team/QChat sender policies: `open`, `allowlist`, `disabled`.
+- Team and QChat mention-gated inbound processing.
+- Team mention prefix cleanup: leading `@xxx` tokens are removed before text reaches Hermes.
+- Online-only inbound dispatch: roaming/offline/history/sync messages are skipped, so gateway restart does not reprocess old messages.
+- P2P and team read receipts for online messages where the SDK/server allows it.
+- Text, long-text chunking, stream fallback, edit-as-replacement, and reply sends.
+- Topic text/media reply support when NIM topic metadata is available.
+- Image, file, audio, and video outbound media.
+- Inbound media download and audio-to-text when SDK support is available.
+- Team/user/QChat name resolution for Hermes session display names.
+- Friend auto-accept governed by P2P policy.
+- Private deployment endpoint options for LBS/link/NOS.
+- Optional inbound batching metadata and temporary quick-comment processing marker.
 
-- a Hermes platform plugin at the repository root
-- a Python control layer for Hermes-facing adapter logic
-- a Node.js bridge for `@yxim/nim-bot`
-- an implementation plan that tracks `openclaw-nim-channel` capability parity where Hermes exposes equivalent host hooks
+## Known Limits
+
+- Inbound quoted/referenced-message display depends on the SDK exposing `threadReply` or equivalent reply metadata. Current live Bot SDK messages observed in this project do not include `threadReply/reply/quote/refer` fields for normal client quote replies, so Hermes WebUI cannot show the referenced source for those messages.
+- QChat media outbound is intentionally unsupported and returns an explicit unsupported result.
+- Team read receipt calls may return `forbidden` depending on server/app permissions; this is logged and does not block message handling.
 
 ## Layout
 
@@ -25,6 +40,9 @@ adapter.py
 __init__.py
 hermes_nim_channel/
   config.py
+  inbound_media.py
+  qchat.py
+  session_titles.py
   platforms/
     base.py
     nim.py
@@ -33,83 +51,173 @@ hermes_nim_channel/
 bridge/
   index.mjs
   package.json
-tests/
+  src/
+  test/
+docs/
 openspec/
+tests/
 ```
 
-## Capability Baseline
+## Install
 
-The long-term functional target is to align with the already implemented capabilities in `openclaw-nim-channel`, including:
+Published plugin install:
 
-- P2P, team, and QChat inbound/outbound flows
-- media delivery
-- voice-to-text handling
-- long-message chunking and streaming-friendly delivery
-- private deployment endpoints
-- reconnect and operational hardening
+```bash
+hermes plugins install netease-im/hermes-nim-channel --enable
+hermes gateway restart
+```
 
-The current repository already contains the bridge-backed Hermes prototype for credential resolution, inbound P2P/team handling, mention-gated team routing, and outbound text send. Further parity work should be implemented against this reinitialized plugin structure instead of reviving the old `gateway/` namespace layout.
+The plugin auto-installs Node bridge dependencies on first gateway start when
+the default `node bridge/index.mjs` command is used. Set
+`NIM_AUTO_INSTALL_BRIDGE=false` to disable this behavior in locked-down
+environments.
+
+Development install, using a symlink:
+
+```bash
+mkdir -p ~/.hermes/plugins
+ln -sfn /Users/xumengxiang/Documents/00.NetEase/05.IM/hermes-nim-channel \
+  ~/.hermes/plugins/hermes-nim-channel
+```
+
+Manual bridge dependency install, only needed when auto-install is disabled or
+failed:
+
+```bash
+npm install --omit=dev --prefix ~/.hermes/plugins/hermes-nim-channel/bridge
+```
+
+Restart Hermes after changing plugin code or config:
+
+```bash
+hermes gateway restart
+```
 
 ## Configuration
 
-The adapter resolves credentials in this order:
+Credentials can be provided as a single token:
 
-1. `platform.extra.nim_token` or `NIM_CREDENTIALS`, using `appKey|accid|token`
-2. `platform.extra.app_key` + `account` + `token`
-3. `NIM_APP_KEY` + `NIM_ACCOUNT` + `NIM_TOKEN`
+```bash
+export NIM_CREDENTIALS='appKey|accid|token'
+```
 
-Additional controls:
+Or as separate values:
 
-- `NIM_ALLOWED_USERS`: comma-separated DM allowlist
-- `NIM_ALLOW_ALL_USERS`: allow all DMs when `true`
-- `NIM_GROUP_POLICY`: `open`, `allowlist`, or `disabled`
-- `NIM_GROUP_ALLOWLIST`: comma-separated team IDs
-- `NIM_P2P_POLICY`: `open`, `allowlist`, or `disabled`; controls DM filtering and friend auto-accept
-- `NIM_P2P_ALLOW_FROM`: comma-separated P2P sender/applicant allowlist; defaults to `NIM_ALLOWED_USERS`
-- `NIM_QCHAT_POLICY`: `open`, `allowlist`, or `disabled`
-- `NIM_QCHAT_ALLOW_FROM`: comma-separated QChat allowlist entries in `server|channel|account` form
-- `NIM_WEBLBS_URL`: private deployment LBS URL
-- `NIM_LINK_WEB`: private deployment link URL
-- `NIM_NOS_UPLOADER`: private NOS upload URL
-- `NIM_NOS_DOWNLOADER_V2`: private NOS download URL format
-- `NIM_NOS_SSL`: whether private NOS download uses HTTPS
-- `NIM_NOS_ACCELERATE`: private NOS accelerate URL format
-- `NIM_NOS_ACCELERATE_HOST`: private NOS accelerate host
-- `NIM_TEXT_CHUNK_LIMIT`: maximum characters per outbound text message chunk; defaults to `4000`
-- `NIM_INBOUND_DEBOUNCE_MS`: optional inbound debounce window used to attach batch metadata; defaults to `0`
-- `NIM_QUICK_COMMENT_ENABLED`: add temporary processing quick comments when supported; defaults to `false`
-- `NIM_QUICK_COMMENT_INDEX`: quick comment index used as the processing marker; defaults to `71`
-- `NIM_QUICK_COMMENT_TTL_MS`: cleanup delay for processing quick comments; defaults to `30000`
-- `NIM_LEGACY_LOGIN`: use `aiBot: 0` legacy login when `true`; defaults to `false`
-- `NIM_ANTISPAM_ENABLED`: include SDK antispam send config; defaults to `true`
-- `NIM_HOME_CHANNEL`: default NIM target for proactive sends
-- `NIM_BRIDGE_COMMAND`: override bridge command; default points to the bundled `bridge/index.mjs`
+```bash
+export NIM_APP_KEY='appKey'
+export NIM_ACCOUNT='botAccid'
+export NIM_TOKEN='token'
+```
 
-QChat targets use the explicit `qchat:<serverId>:<channelId>` prefix.
+Access policy defaults are `open` unless explicitly configured.
 
-## Local Verification
+```bash
+# P2P: open / allowlist / disabled
+export NIM_P2P_POLICY='allowlist'
+export NIM_P2P_ALLOW_FROM='alice,bob'
 
-Python:
+# Team/superTeam: open / allowlist / disabled
+export NIM_GROUP_POLICY='open'
+export NIM_GROUP_ALLOWLIST='123456,789012'
+
+# QChat: open / allowlist / disabled
+export NIM_QCHAT_POLICY='allowlist'
+export NIM_QCHAT_ALLOW_FROM='serverId|channelId,serverId2|channelId2|alice'
+```
+
+Common runtime options:
+
+```bash
+export NIM_HOME_CHANNEL='team:123456'
+export NIM_TEXT_CHUNK_LIMIT='4000'
+export NIM_INBOUND_DEBOUNCE_MS='0'
+export NIM_QUICK_COMMENT_ENABLED='false'
+export NIM_QUICK_COMMENT_INDEX='71'
+export NIM_QUICK_COMMENT_TTL_MS='30000'
+export NIM_LEGACY_LOGIN='false'
+export NIM_ANTISPAM_ENABLED='true'
+```
+
+Private deployment options:
+
+```bash
+export NIM_WEBLBS_URL='https://lbs.example.com'
+export NIM_LINK_WEB='wss://link.example.com'
+export NIM_NOS_UPLOADER='https://upload.example.com'
+export NIM_NOS_DOWNLOADER_V2='https://download.example.com/{object}'
+export NIM_NOS_SSL='true'
+export NIM_NOS_ACCELERATE='https://cdn.example.com/{object}'
+export NIM_NOS_ACCELERATE_HOST='cdn.example.com'
+```
+
+Override bridge command when needed:
+
+```bash
+export NIM_BRIDGE_COMMAND='node /absolute/path/to/hermes-nim-channel/bridge/index.mjs'
+export NIM_AUTO_INSTALL_BRIDGE='false'
+```
+
+## Chat ID Format
+
+- P2P: `user:<accid>`, for example `user:alice`.
+- Team/superTeam: `team:<teamId>`, for example `team:123456`.
+- QChat: `qchat:<serverId>:<channelId>`, for example `qchat:server-a:channel-b`.
+
+## Runtime Behavior
+
+- Only online messages (`messageSource === 1`) are dispatched to Hermes. Non-online sync, roaming, offline, and history messages are skipped.
+- Team/superTeam messages require mention/force-push to the bot before dispatch.
+- QChat messages require mention or mention-all before dispatch.
+- Leading group mention text is stripped before Hermes sees the message content.
+- Raw NIM payload is still kept in the event metadata for debugging and advanced handling.
+- `reply_to` sends use NIM reply APIs when the original message can be found in the bridge cache or by message refer.
+
+## Verification
+
+Python tests:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Node:
+Node tests:
 
 ```bash
 node --test bridge/test/*.test.mjs
 ```
 
-OpenSpec:
+Expected current baseline:
+
+- Python: 44 tests passing.
+- Node: 59 tests passing.
+
+Useful runtime checks:
 
 ```bash
-OPENSPEC_TELEMETRY=0 openspec validate add-hermes-nim-channel --type change --no-interactive
+hermes gateway status
+tail -n 120 ~/.hermes/logs/gateway.log
+tail -n 120 ~/.hermes/logs/gateway.error.log
+ps -ef | rg 'gateway run|bridge/index.mjs' | rg -v rg
 ```
+
+## Feature Checklist
+
+- [ ] NIM login succeeds and bridge process stays alive.
+- [ ] P2P online message triggers exactly one Hermes response.
+- [ ] Gateway restart does not replay old P2P/team messages.
+- [ ] Team @ message triggers Hermes and strips the leading @ mention text.
+- [ ] Team non-@ message is ignored.
+- [ ] Team read receipt is attempted for online team messages.
+- [ ] P2P text reply uses NIM reply when reply target is cached.
+- [ ] Long text is chunked according to `NIM_TEXT_CHUNK_LIMIT`.
+- [ ] Inbound media creates `media_urls` and `media_types`.
+- [ ] Outbound image/file/audio/video works in P2P/team.
+- [ ] QChat text send/receive works with configured policy.
+- [ ] WebUI session names follow `云信·单聊·<昵称>` and `云信·群聊·<群名>`.
 
 ## SDD Workflow
 
-This repository now standardizes on the global `openspec` CLI for spec-driven development.
+This repository uses the global `openspec` CLI for spec-driven development.
 
 - Project schema config: `openspec/config.yaml`
 - Workflow wrapper: `./scripts/sdd`

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import time
 import unittest
 
 from hermes_nim_channel.config import PlatformConfig
 from hermes_nim_channel.inbound_media import parse_inbound_attachment
 from hermes_nim_channel.platforms.nim import NimAdapter
+from hermes_nim_channel.platforms.nim_bridge import BridgeError, NodeBridgeProcess
 
 
 class FakeBridge:
@@ -305,6 +308,85 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(accepted))
         self.assertEqual("team:team-1", accepted[0].source.chat_id)
 
+    async def test_inbound_reply_context_is_forwarded(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "p2p_policy": "open",
+                }
+            ),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "p2p",
+                    "sender_id": "alice",
+                    "target_id": "bot",
+                    "text": "reply text",
+                    "message_id": "reply-server",
+                    "message_type": "text",
+                    "reply_to_message_id": "source-server",
+                    "reply_to_text": "source text",
+                    "reply_to_author_id": "bot",
+                    "reply_to_author_name": "Nim Bot",
+                    "reply_to_is_own_message": True,
+                },
+            }
+        )
+
+        self.assertEqual(1, len(accepted))
+        event = accepted[0]
+        self.assertEqual("source-server", event.reply_to_message_id)
+        self.assertEqual("source text", event.reply_to_text)
+        self.assertEqual("bot", event.reply_to_author_id)
+        self.assertEqual("Nim Bot", event.reply_to_author_name)
+        self.assertTrue(event.reply_to_is_own_message)
+        self.assertEqual("source-server", event.raw["metadata"]["reply_to_message_id"])
+
+    async def test_non_online_message_is_ignored(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(
+                extra={
+                    "nim_token": "app|bot|secret",
+                    "p2p_policy": "open",
+                }
+            ),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "p2p",
+                    "sender_id": "alice",
+                    "target_id": "bot",
+                    "text": "old message",
+                    "message_id": "old-1",
+                    "message_type": "text",
+                    "message_source": 3,
+                },
+            }
+        )
+
+        self.assertEqual([], accepted)
+
     async def test_send_uses_session_prefix(self) -> None:
         bridge = FakeBridge()
         adapter = NimAdapter(
@@ -427,6 +509,25 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, bridge.stream_sent[0]["chunk_index"])
         self.assertEqual(False, bridge.stream_sent[0]["is_complete"])
         self.assertEqual("server-1", bridge.stream_sent[0]["reply_to"])
+
+    async def test_send_stream_invalid_chunk_index_falls_back_to_zero(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send(
+            "user:alice",
+            "chunk",
+            metadata={
+                "stream": {
+                    "chunk_index": "bad",
+                },
+            },
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(0, bridge.stream_sent[0]["chunk_index"])
 
     async def test_inbound_metadata_is_forwarded_in_raw_metadata(self) -> None:
         bridge = FakeBridge()
@@ -663,6 +764,51 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(attachment)
         self.assertEqual("voice.scene", attachment.scene_name)
+
+
+class NodeBridgeProcessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_failure_cleans_up_process(self) -> None:
+        script = """
+import json
+import sys
+import time
+line = sys.stdin.readline()
+request = json.loads(line)
+print(json.dumps({"id": request["id"], "type": "response", "status": "error", "error": "boom"}), flush=True)
+time.sleep(10)
+"""
+        bridge = NodeBridgeProcess(
+            [sys.executable, "-c", script],
+            request_timeout=0.2,
+            stop_timeout=0.2,
+        )
+        config = NimAdapter(PlatformConfig(extra={"nim_token": "app|bot|secret"})).resolved
+        with self.assertRaises(BridgeError):
+            await bridge.start(config)
+        self.assertIsNone(bridge._process)
+
+    async def test_stop_kills_unresponsive_process(self) -> None:
+        script = """
+import json
+import sys
+import time
+line = sys.stdin.readline()
+request = json.loads(line)
+print(json.dumps({"id": request["id"], "type": "response", "status": "ok", "result": {"connected": True}}), flush=True)
+time.sleep(10)
+"""
+        bridge = NodeBridgeProcess(
+            [sys.executable, "-c", script],
+            request_timeout=0.5,
+            stop_timeout=0.05,
+        )
+        config = NimAdapter(PlatformConfig(extra={"nim_token": "app|bot|secret"})).resolved
+        await bridge.start(config)
+        bridge._request_timeout = 0.05
+        started_at = time.monotonic()
+        await bridge.stop()
+        self.assertLess(time.monotonic() - started_at, 1.0)
+        self.assertIsNone(bridge._process)
 
 
 if __name__ == "__main__":

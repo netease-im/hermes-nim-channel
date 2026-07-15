@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
@@ -81,6 +82,35 @@ class NimConfigTests(unittest.TestCase):
         self.assertEqual({"enabled": True, "index": 72, "ttl_ms": 5000}, payload["quick_comment"])
         self.assertTrue(payload["legacy_login"])
         self.assertFalse(payload["antispam_enabled"])
+
+    def test_group_policy_defaults_to_open(self) -> None:
+        resolved = load_nim_config(
+            PlatformConfig(),
+            {
+                "NIM_APP_KEY": "app",
+                "NIM_ACCOUNT": "bot",
+                "NIM_TOKEN": "secret",
+            },
+        )
+
+        self.assertEqual("open", resolved.group_policy)
+
+    def test_platform_home_channel_is_supported(self) -> None:
+        platform = SimpleNamespace(
+            enabled=True,
+            extra={},
+            home_channel=SimpleNamespace(chat_id="team:123"),
+        )
+        resolved = load_nim_config(
+            platform,  # type: ignore[arg-type]
+            {
+                "NIM_APP_KEY": "app",
+                "NIM_ACCOUNT": "bot",
+                "NIM_TOKEN": "secret",
+            },
+        )
+
+        self.assertEqual("team:123", resolved.home_channel)
 
     def test_qchat_allowlist_alias_is_supported(self) -> None:
         resolved = load_nim_config(

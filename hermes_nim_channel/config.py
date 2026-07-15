@@ -34,7 +34,7 @@ class NimResolvedConfig:
     allow_all_users: bool = False
     p2p_policy: str = "open"
     p2p_allow_from: list[str] = field(default_factory=list)
-    group_policy: str = "allowlist"
+    group_policy: str = "open"
     group_allowlist: list[str] = field(default_factory=list)
     qchat_policy: str = "open"
     qchat_allow_from: list[str] = field(default_factory=list)
@@ -139,6 +139,12 @@ def _as_optional_str(value: Any) -> str | None:
     return normalized or None
 
 
+def _platform_home_channel(platform: PlatformConfig) -> str | None:
+    home_channel = getattr(platform, "home_channel", None)
+    chat_id = getattr(home_channel, "chat_id", None)
+    return _as_optional_str(chat_id)
+
+
 def _as_int(value: Any, default: int, min_value: int | None = None) -> int:
     if value in (None, ""):
         return default
@@ -230,11 +236,15 @@ def load_nim_config(
         allow_all_users=allow_all_users,
         p2p_policy=p2p_policy,
         p2p_allow_from=p2p_allow_from,
-        group_policy=str(_pick(extra, env, "group_policy", "NIM_GROUP_POLICY") or "allowlist").strip(),
+        group_policy=str(_pick(extra, env, "group_policy", "NIM_GROUP_POLICY") or "open").strip(),
         group_allowlist=_as_list(_pick(extra, env, "group_allowlist", "NIM_GROUP_ALLOWLIST")),
         qchat_policy=str(_pick(extra, env, "qchat_policy", "NIM_QCHAT_POLICY") or "open").strip(),
         qchat_allow_from=qchat_allow_from,
-        home_channel=str(_pick(extra, env, "home_channel", "NIM_HOME_CHANNEL") or "").strip() or None,
+        home_channel=(
+            _platform_home_channel(platform)
+            or str(_pick(extra, env, "home_channel", "NIM_HOME_CHANNEL") or "").strip()
+            or None
+        ),
         bridge_command=_resolve_bridge_command(_pick(extra, env, "bridge_command", "NIM_BRIDGE_COMMAND")),
         media_max_mb=_as_int(_pick(extra, env, "media_max_mb", "NIM_MEDIA_MAX_MB"), 30, 1),
         text_chunk_limit=_as_int(_pick(extra, env, "text_chunk_limit", "NIM_TEXT_CHUNK_LIMIT"), 4000, 1),

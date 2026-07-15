@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -27,6 +28,9 @@ from hermes_nim_channel.platforms.base import (
     SendResult,
 )
 from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
+from hermes_nim_channel.session_titles import schedule_nim_session_title_pin
+
+logger = logging.getLogger(__name__)
 
 AttachmentLoader = Callable[[dict[str, Any], str], tuple[list[str], list[str]] | Awaitable[tuple[list[str], list[str]]]]
 
@@ -52,7 +56,7 @@ class NimAdapter(BasePlatformAdapter):
         self._chat_cache: dict[str, ChatInfo] = {}
         self._attachment_loader = attachment_loader
 
-    async def connect(self) -> bool:
+    async def connect(self, *args: Any, **kwargs: Any) -> bool:
         if not self.resolved.configured():
             self.connected = False
             return False
@@ -108,7 +112,7 @@ class NimAdapter(BasePlatformAdapter):
                     chat_id=chat_id,
                     text=text,
                     session_type=session_type,
-                    chunk_index=int(stream.get("chunk_index", stream.get("index", 0))),
+                    chunk_index=self._metadata_int(stream.get("chunk_index", stream.get("index", 0)), 0),
                     is_complete=self._metadata_bool(stream.get("is_complete", stream.get("finish", True)), True),
                     reply_to=meta.get("reply_to"),
                 )
@@ -214,7 +218,16 @@ class NimAdapter(BasePlatformAdapter):
         if envelope.get("event") != "message":
             return
         payload = dict(envelope.get("payload") or {})
-        if self._should_ignore(payload):
+        ignore_reason = self._ignore_reason(payload)
+        if ignore_reason:
+            logger.info(
+                "Ignoring NIM inbound message: reason=%s session_type=%s sender=%s target=%s message_id=%s",
+                ignore_reason,
+                payload.get("session_type"),
+                payload.get("sender_id"),
+                payload.get("target_id"),
+                payload.get("message_id") or payload.get("client_message_id"),
+            )
             return
         event = await self._to_message_event(payload)
         self._chat_cache[event.source.chat_id] = ChatInfo(
@@ -223,6 +236,7 @@ class NimAdapter(BasePlatformAdapter):
             chat_name=event.source.chat_name,
         )
         await self.handle_message(event)
+        schedule_nim_session_title_pin(event.source)
 
     def _handle_connection_event(self, payload: dict[str, Any]) -> None:
         status = str(payload.get("status") or "")
@@ -232,30 +246,36 @@ class NimAdapter(BasePlatformAdapter):
             self.connected = False
 
     def _should_ignore(self, payload: dict[str, Any]) -> bool:
+        return self._ignore_reason(payload) is not None
+
+    def _ignore_reason(self, payload: dict[str, Any]) -> str | None:
+        if "message_source" in payload and payload.get("message_source") != 1:
+            return "non_online_message"
         if payload.get("from_self"):
-            return True
+            return "from_self"
         session_type = str(payload.get("session_type") or "p2p")
         sender_id = str(payload.get("sender_id") or "")
         if session_type == "p2p":
-            return not self._is_allowed_direct_sender(sender_id)
+            return None if self._is_allowed_direct_sender(sender_id) else "p2p_not_allowed"
         if session_type in {"team", "superTeam"}:
             if not self._is_allowed_group(str(payload.get("target_id") or "")):
-                return True
-            return not self._is_mentioned(payload)
+                return "group_not_allowed"
+            return None if self._is_mentioned(payload) else "group_not_mentioned"
         if session_type == "qchat":
             if not self._is_mentioned(payload):
-                return True
+                return "qchat_not_mentioned"
             server_id, channel_id = self._resolve_qchat_target(payload)
             if not server_id or not channel_id:
-                return True
-            return not is_qchat_allowed(
+                return "qchat_target_missing"
+            allowed = is_qchat_allowed(
                 policy=self.resolved.qchat_policy,
                 allow_from=self.resolved.qchat_allow_from,
                 server_id=server_id,
                 channel_id=channel_id,
                 sender_accid=sender_id,
             )
-        return True
+            return None if allowed else "qchat_not_allowed"
+        return "unsupported_session_type"
 
     def _is_allowed_direct_sender(self, sender_id: str) -> bool:
         if self.resolved.p2p_policy == "disabled":
@@ -334,6 +354,11 @@ class NimAdapter(BasePlatformAdapter):
                     "topic_info": payload.get("topic_info"),
                     "topic_name": payload.get("topic_name"),
                     "thread_reply": payload.get("thread_reply"),
+                    "reply_to_message_id": payload.get("reply_to_message_id"),
+                    "reply_to_text": payload.get("reply_to_text"),
+                    "reply_to_author_id": payload.get("reply_to_author_id"),
+                    "reply_to_author_name": payload.get("reply_to_author_name"),
+                    "reply_to_is_own_message": payload.get("reply_to_is_own_message"),
                     "batch_id": payload.get("batch_id"),
                     "batch_key": payload.get("batch_key"),
                     "batch_index": payload.get("batch_index"),
@@ -345,7 +370,18 @@ class NimAdapter(BasePlatformAdapter):
             },
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=self._optional_str(payload.get("reply_to_message_id")),
+            reply_to_text=self._optional_str(payload.get("reply_to_text")),
+            reply_to_author_id=self._optional_str(payload.get("reply_to_author_id")),
+            reply_to_author_name=self._optional_str(payload.get("reply_to_author_name")),
+            reply_to_is_own_message=bool(payload.get("reply_to_is_own_message")),
         )
+
+    @staticmethod
+    def _optional_str(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        return str(value)
 
     def _infer_session_type(self, chat_id: str, metadata: dict[str, Any] | None) -> str:
         if metadata and metadata.get("session_type"):
@@ -369,6 +405,15 @@ class NimAdapter(BasePlatformAdapter):
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _metadata_int(value: Any, default: int) -> int:
+        if value in (None, ""):
+            return default
+        try:
+            return int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            return default
 
     async def _send_media_with_optional_caption(
         self,

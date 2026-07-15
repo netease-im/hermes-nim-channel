@@ -14,12 +14,14 @@ import {
   isP2pApplicantAllowed,
   normalizeTarget,
   normalizeConnectionStatus,
+  normalizeSendResult,
   parseBridgeConfig,
   ReplyMessageCache,
   sendMediaMaybeTopicReply,
   sendEditReplacementMessage,
   sendStreamTextMessage,
   sendTextReplyMessage,
+  shouldDispatchInboundMessage,
   splitMessageIntoChunks,
   toInboundMessage,
 } from "./src/config.mjs";
@@ -125,16 +127,26 @@ function setupConnectionRuntime(loginService) {
   }
 
   const emitConnection = (payload) => {
+    if (runtime) {
+      runtime.connectionStatus = payload.status ?? "unknown";
+      runtime.connectionReason = payload.reason ?? "";
+    }
     emit(eventMessage("connection", payload));
   };
   const loginStatusHandler = (status) => {
-    emitConnection(normalizeConnectionStatus("login", status));
+    const payload = normalizeConnectionStatus("login", status);
+    console.info(`[nim] login status changed — status: ${payload.status}, raw: ${JSON.stringify(status)}`);
+    emitConnection(payload);
   };
   const kickedOfflineHandler = (detail) => {
-    emitConnection(normalizeConnectionStatus("kickout", detail));
+    const payload = normalizeConnectionStatus("kickout", detail);
+    console.warn(`[nim] kicked offline — reason: ${payload.reason}`);
+    emitConnection(payload);
   };
   const disconnectedHandler = (error) => {
-    emitConnection(normalizeConnectionStatus("disconnected", error));
+    const payload = normalizeConnectionStatus("disconnected", error);
+    console.warn(`[nim] disconnected — reason: ${payload.reason}`);
+    emitConnection(payload);
   };
 
   loginService.on("onLoginStatus", loginStatusHandler);
@@ -425,6 +437,7 @@ async function handleConnect(id, params) {
   const messageService = nim.V2NIMMessageService;
   const messageCreator = nim.V2NIMMessageCreator;
   const replyCache = new ReplyMessageCache();
+  const quickCommentCleanups = [];
   const inboundBatcher = new InboundBatchEmitter({
     debounceMs: config.inboundDebounceMs,
     emitBatch: async (items, batchKey, batchId) => {
@@ -447,16 +460,22 @@ async function handleConnect(id, params) {
   }
 
   messageService.on("onReceiveMessages", (messages = []) => {
+    sendReadReceipts(messageService, messages);
     void (async () => {
       try {
+        let skippedNonOnline = 0;
         for (const message of messages) {
+          if (!shouldDispatchInboundMessage(message)) {
+            skippedNonOnline += 1;
+            continue;
+          }
           replyCache.add(message);
           const payload = await toInboundMessage(message, config.credentials.account, nim);
           const quickComment = await addProcessingQuickComment({
             nim,
             message,
             config,
-            trackCleanup: (cleanup) => runtime?.quickCommentCleanups?.push(cleanup),
+            trackCleanup: (cleanup) => quickCommentCleanups.push(cleanup),
           });
           const batchKey = inboundBatchKey(payload);
           inboundBatcher.enqueue(batchKey, {
@@ -466,7 +485,9 @@ async function handleConnect(id, params) {
             },
           });
         }
-        sendReadReceipts(messageService, messages);
+        if (skippedNonOnline > 0) {
+          console.log(`[nim] skipped ${skippedNonOnline} non-online inbound messages for dispatch`);
+        }
       } catch (error) {
         console.error(
           `[nim] inbound message handling failed — error: ${error instanceof Error ? error.message : String(error)}`,
@@ -475,9 +496,12 @@ async function handleConnect(id, params) {
     })();
   });
 
-  await loginService.login(config.credentials.account, config.credentials.token, {
-    aiBot: config.legacyLogin ? 0 : 2,
-  });
+  const aiBot = config.legacyLogin ? 0 : 2;
+  console.info(
+    `[nim] login started — account: ${config.credentials.account}, aiBot: ${aiBot} (legacyLogin: ${config.legacyLogin})`,
+  );
+  await loginService.login(config.credentials.account, config.credentials.token, { aiBot });
+  console.info(`[nim] login successful — account: ${config.credentials.account}, aiBot: ${aiBot}`);
 
   runtime = {
     nim,
@@ -486,7 +510,9 @@ async function handleConnect(id, params) {
     messageCreator,
     replyCache,
     inboundBatcher,
-    quickCommentCleanups: [],
+    quickCommentCleanups,
+    connectionStatus: "connected",
+    connectionReason: "login",
     config,
   };
   connectionRuntime = setupConnectionRuntime(loginService);
@@ -502,9 +528,14 @@ async function handleConnect(id, params) {
 }
 
 function sendReadReceipts(messageService, messages) {
-  const { p2p, teamBatches } = collectReadReceiptBatches(messages);
+  const { p2p, teamBatches, skipped } = collectReadReceiptBatches(messages);
+  if (skipped > 0) {
+    console.log(`[nim] skipped ${skipped} non-online messages for read receipt`);
+  }
+
   for (const message of p2p) {
     if (typeof messageService.sendP2PMessageReceipt !== "function") {
+      console.warn("[nim] send p2p read receipt skipped — SDK method unavailable");
       break;
     }
     try {
@@ -521,9 +552,15 @@ function sendReadReceipts(messageService, messages) {
   }
 
   if (typeof messageService.sendTeamMessageReceipts !== "function") {
+    if (teamBatches.length > 0) {
+      console.warn("[nim] send team read receipts skipped — SDK method unavailable");
+    }
     return;
   }
   for (const batch of teamBatches) {
+    if (batch.length === 0) {
+      continue;
+    }
     try {
       Promise.resolve(messageService.sendTeamMessageReceipts(batch)).catch((error) => {
         console.warn(
@@ -546,8 +583,10 @@ async function handleDisconnect(id) {
 async function handleHealth(id) {
   emit(
     okResponse(id, {
-      connected: Boolean(runtime),
+      connected: Boolean(runtime) && runtime.connectionStatus !== "disconnected" && runtime.connectionStatus !== "logout" && runtime.connectionStatus !== "kickout",
       account: runtime?.config?.credentials?.account ?? null,
+      connection_status: runtime?.connectionStatus ?? "disconnected",
+      connection_reason: runtime?.connectionReason ?? "",
     }),
   );
 }
@@ -632,14 +671,6 @@ async function sendCreatedMessage(message, conversationId) {
   return result;
 }
 
-function sendResultFromSdkResult(result) {
-  const message = result?.message ?? result;
-  return {
-    message_id: String(message?.messageServerId ?? ""),
-    client_message_id: String(message?.messageClientId ?? ""),
-  };
-}
-
 function responseFromChunkResults(results) {
   const last = results[results.length - 1] ?? {};
   return {
@@ -648,6 +679,35 @@ function responseFromChunkResults(results) {
     chunks: results,
     chunk_count: results.length,
   };
+}
+
+async function resolveReplyOriginalMessage(replyTo) {
+  const originalMessage = runtime.replyCache.get(replyTo);
+  if (originalMessage) {
+    console.info(`[nim] reply target cache hit — replyTo: ${replyTo}`);
+    return originalMessage;
+  }
+
+  const messageRefer = runtime.replyCache.getRefer(replyTo);
+  if (!messageRefer || typeof runtime.messageService?.getMessageListByRefers !== "function") {
+    console.warn(`[nim] reply target cache miss — replyTo: ${replyTo}, refer: ${messageRefer ? "available" : "missing"}`);
+    return null;
+  }
+
+  try {
+    const messages = await runtime.messageService.getMessageListByRefers([messageRefer]);
+    const fetched = Array.isArray(messages) ? messages[0] : null;
+    if (fetched) {
+      runtime.replyCache.add(fetched);
+      console.info(`[nim] reply target fetched by refer — replyTo: ${replyTo}`);
+      return fetched;
+    }
+  } catch (error) {
+    console.warn(
+      `[nim] reply target fetch failed — replyTo: ${replyTo}, error: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return null;
 }
 
 async function handleSendMessage(id, params) {
@@ -665,7 +725,7 @@ async function handleSendMessage(id, params) {
 
   const replyTo = String(params?.reply_to ?? "").trim();
   if (replyTo) {
-    const originalMessage = runtime.replyCache.get(replyTo);
+    const originalMessage = await resolveReplyOriginalMessage(replyTo);
     if (!originalMessage) {
       throw new Error(`reply target not found: ${replyTo}`);
     }
@@ -682,7 +742,7 @@ async function handleSendMessage(id, params) {
         originalMessage,
         options: textSendOptions(),
       });
-      results.push(sendResultFromSdkResult(sendResult));
+      results.push(normalizeSendResult(sendResult));
     }
     emit(okResponse(id, responseFromChunkResults(results)));
     return;
@@ -712,7 +772,7 @@ async function handleSendStreamMessage(id, params) {
   const isComplete = Boolean(params?.is_complete ?? params?.isComplete ?? true);
   const streamChunkParams = createStreamChunkParams({ text, chunkIndex, isComplete });
   const replyTo = String(params?.reply_to ?? "").trim();
-  const originalMessage = replyTo ? runtime.replyCache.get(replyTo) : null;
+  const originalMessage = replyTo ? await resolveReplyOriginalMessage(replyTo) : null;
   if (replyTo && !originalMessage) {
     throw new Error(`reply target not found: ${replyTo}`);
   }
@@ -732,7 +792,7 @@ async function handleSendStreamMessage(id, params) {
   });
   const result = sent.mode === "fallback"
     ? { ...sent.result, stream_fallback: true }
-    : sendResultFromSdkResult(sent.result);
+    : normalizeSendResult(sent.result);
   emit(okResponse(id, result));
 }
 
@@ -827,7 +887,7 @@ async function handleSendMedia(id, params) {
     sendOrdinary: () => sendCreatedMessage(message, conversationId),
   });
   const result = mediaSend.usedTopicReply
-    ? sendResultFromSdkResult(mediaSend.result)
+    ? normalizeSendResult(mediaSend.result)
     : mediaSend.result;
   emit(okResponse(id, result));
 }

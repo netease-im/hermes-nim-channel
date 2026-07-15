@@ -14,6 +14,20 @@ function parseNimToken(value) {
   };
 }
 
+function numberOrDefault(value, defaultValue, minValue = null) {
+  if (value === null || value === undefined || value === "") {
+    return defaultValue;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return defaultValue;
+  }
+  if (minValue !== null && parsed < minValue) {
+    return minValue;
+  }
+  return parsed;
+}
+
 export function parseBridgeConfig(raw) {
   const credentials = raw?.credentials ?? {};
   const shorthand = parseNimToken(raw?.nim_token ?? raw?.nimToken);
@@ -34,13 +48,13 @@ export function parseBridgeConfig(raw) {
   return {
     credentials: resolved,
     debug: Boolean(raw?.debug),
-    mediaMaxMb: Number(raw?.media_max_mb ?? raw?.mediaMaxMb ?? 30),
-    textChunkLimit: Number(raw?.text_chunk_limit ?? raw?.textChunkLimit ?? raw?.advanced?.textChunkLimit ?? 4000),
-    inboundDebounceMs: Number(raw?.inbound_debounce_ms ?? raw?.inboundDebounceMs ?? raw?.advanced?.inboundDebounceMs ?? 0),
+    mediaMaxMb: numberOrDefault(raw?.media_max_mb ?? raw?.mediaMaxMb, 30, 1),
+    textChunkLimit: numberOrDefault(raw?.text_chunk_limit ?? raw?.textChunkLimit ?? raw?.advanced?.textChunkLimit, 4000, 1),
+    inboundDebounceMs: numberOrDefault(raw?.inbound_debounce_ms ?? raw?.inboundDebounceMs ?? raw?.advanced?.inboundDebounceMs, 0, 0),
     quickComment: {
       enabled: optionalBoolean(raw?.quick_comment?.enabled ?? raw?.quickComment?.enabled ?? raw?.quick_comment_enabled ?? raw?.quickCommentEnabled) ?? false,
-      index: Number(raw?.quick_comment?.index ?? raw?.quickComment?.index ?? raw?.quick_comment_index ?? raw?.quickCommentIndex ?? 71),
-      ttlMs: Number(raw?.quick_comment?.ttl_ms ?? raw?.quickComment?.ttlMs ?? raw?.quick_comment_ttl_ms ?? raw?.quickCommentTtlMs ?? 30000),
+      index: numberOrDefault(raw?.quick_comment?.index ?? raw?.quickComment?.index ?? raw?.quick_comment_index ?? raw?.quickCommentIndex, 71, 1),
+      ttlMs: numberOrDefault(raw?.quick_comment?.ttl_ms ?? raw?.quickComment?.ttlMs ?? raw?.quick_comment_ttl_ms ?? raw?.quickCommentTtlMs, 30000, 1000),
     },
     legacyLogin: legacyLogin ?? false,
     antispamEnabled: antispamEnabled ?? true,
@@ -210,10 +224,12 @@ export function parseConversationId(conversationId) {
 export function collectReadReceiptBatches(messages = [], batchSize = 50) {
   const p2p = [];
   const team = [];
+  let skipped = 0;
   const safeBatchSize = Math.max(1, Number(batchSize) || 50);
 
   for (const message of Array.isArray(messages) ? messages : []) {
     if (message?.messageSource !== 1) {
+      skipped += 1;
       continue;
     }
     const { sessionType } = parseConversationId(message?.conversationId ?? "");
@@ -232,16 +248,23 @@ export function collectReadReceiptBatches(messages = [], batchSize = 50) {
   return {
     p2p,
     teamBatches,
+    skipped,
   };
+}
+
+export function shouldDispatchInboundMessage(message) {
+  return message?.messageSource === 1;
 }
 
 export class ReplyMessageCache {
   constructor(limit = 200) {
     this.limit = Math.max(1, Number(limit) || 200);
     this.entries = new Map();
+    this.refers = new Map();
   }
 
   add(message) {
+    const refer = deriveMessageRefer(message);
     const keys = [
       message?.messageServerId,
       message?.messageClientId,
@@ -256,10 +279,17 @@ export class ReplyMessageCache {
         this.entries.delete(key);
       }
       this.entries.set(key, message);
+      if (refer) {
+        if (this.refers.has(key)) {
+          this.refers.delete(key);
+        }
+        this.refers.set(key, refer);
+      }
     }
     while (this.entries.size > this.limit) {
       const oldestKey = this.entries.keys().next().value;
       this.entries.delete(oldestKey);
+      this.refers.delete(oldestKey);
     }
   }
 
@@ -269,6 +299,14 @@ export class ReplyMessageCache {
       return null;
     }
     return this.entries.get(key) ?? null;
+  }
+
+  getRefer(messageId) {
+    const key = String(messageId ?? "").trim();
+    if (!key) {
+      return null;
+    }
+    return this.refers.get(key) ?? null;
   }
 }
 
@@ -304,6 +342,55 @@ export function splitMessageIntoChunks(text, maxLength = 4000) {
 }
 
 const teamNameCache = new Map();
+const userNameCache = new Map();
+
+function buildConversationLabel(kind, displayName) {
+  const normalized = String(displayName ?? "").trim();
+  if (kind === "p2p") {
+    return `云信·单聊·${normalized}`;
+  }
+  if (kind === "qchat") {
+    return `云信·圈组·${normalized}`;
+  }
+  return `云信·群聊·${normalized}`;
+}
+
+export async function resolveUserName(nim, accountId, senderName = null) {
+  const normalizedAccountId = String(accountId ?? "").trim();
+  const normalizedSenderName = String(senderName ?? "").trim();
+  if (!normalizedAccountId) {
+    return normalizedSenderName || null;
+  }
+  if (normalizedSenderName) {
+    userNameCache.set(normalizedAccountId, normalizedSenderName);
+    return normalizedSenderName;
+  }
+  if (userNameCache.has(normalizedAccountId)) {
+    return userNameCache.get(normalizedAccountId);
+  }
+
+  let name = normalizedAccountId;
+  let resolved = false;
+  try {
+    const userService = nim?.V2NIMUserService;
+    if (userService?.getUserList) {
+      const users = await userService.getUserList([normalizedAccountId]);
+      const user = Array.isArray(users) ? users[0] : users?.users?.[0];
+      const resolvedName = String(user?.name ?? user?.nick ?? "").trim();
+      if (resolvedName) {
+        name = resolvedName;
+        resolved = true;
+      }
+    }
+  } catch {
+    name = normalizedAccountId;
+  }
+
+  if (resolved) {
+    userNameCache.set(normalizedAccountId, name);
+  }
+  return name;
+}
 
 export async function resolveTeamName(nim, teamId, sessionType = "team") {
   const normalizedTeamId = String(teamId ?? "").trim();
@@ -672,6 +759,14 @@ export async function sendStreamTextMessage({ messageService, message, conversat
   };
 }
 
+export function normalizeSendResult(result) {
+  const message = result?.message ?? result?.baseMessage ?? result;
+  return {
+    message_id: String(message?.messageServerId ?? result?.msgId ?? result?.message_id ?? ""),
+    client_message_id: String(message?.messageClientId ?? result?.clientMsgId ?? result?.client_message_id ?? ""),
+  };
+}
+
 export async function sendEditReplacementMessage({ messageCreator, text, messageId = "", sendCreated }) {
   const message = messageCreator?.createTextMessage?.(String(text ?? ""));
   if (!message) {
@@ -736,6 +831,139 @@ function extractInboundText(messageType, text, attachment) {
   return prefix ? `${prefix} ${attachmentUrl}`.trim() : content;
 }
 
+export function stripLeadingMentionPrefix(text) {
+  return String(text ?? "").replace(/^(\s*@\S+\s*)+/, "").trimStart();
+}
+
+function inferInboundMessageType(message) {
+  const typeMap = {
+    0: "text",
+    1: "image",
+    2: "audio",
+    3: "video",
+    6: "file",
+  };
+  return typeMap[message?.messageType] ?? "unknown";
+}
+
+function pickFirstMessage(value) {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+  if (Array.isArray(value?.messages)) {
+    return value.messages[0] ?? null;
+  }
+  if (Array.isArray(value?.data)) {
+    return value.data[0] ?? null;
+  }
+  if (value?.message && typeof value.message === "object") {
+    return value.message;
+  }
+  return value && typeof value === "object" ? value : null;
+}
+
+function directReplyMessage(message) {
+  const candidates = [
+    message?.replyMessage,
+    message?.repliedMessage,
+    message?.quotedMessage,
+    message?.quoteMessage,
+    message?.referMessage,
+  ];
+  return candidates.find((candidate) => candidate && typeof candidate === "object") ?? null;
+}
+
+async function resolveInboundReplyContext(message, botAccount, nim = null) {
+  const threadReply = message?.threadReply ?? null;
+  let replyMessage = directReplyMessage(message);
+
+  if (!replyMessage && threadReply && typeof nim?.V2NIMMessageService?.getMessageListByRefers === "function") {
+    try {
+      replyMessage = pickFirstMessage(
+        await nim.V2NIMMessageService.getMessageListByRefers([threadReply]),
+      );
+    } catch (error) {
+      console.warn(
+        `[nim] inbound reply lookup failed — replyTo: ${String(threadReply?.messageServerId ?? threadReply?.messageClientId ?? "unknown")}, error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  const replyId = String(
+    replyMessage?.messageServerId ??
+    replyMessage?.messageClientId ??
+    threadReply?.messageServerId ??
+    threadReply?.messageClientId ??
+    "",
+  ).trim();
+  if (!replyId) {
+    return null;
+  }
+
+  const replyMessageType = inferInboundMessageType(replyMessage);
+  const replyAttachment = normalizeAttachment(replyMessage?.attachment ?? replyMessage?.attach);
+  const replyText = extractInboundText(replyMessageType, replyMessage?.text, replyAttachment).trim();
+  const authorId = String(replyMessage?.senderId ?? threadReply?.senderId ?? "").trim();
+  const authorName = authorId
+    ? await resolveUserName(nim, authorId, replyMessage?.senderName)
+    : null;
+
+  return {
+    reply_to_message_id: replyId,
+    reply_to_text: replyText,
+    reply_to_author_id: authorId || null,
+    reply_to_author_name: authorName,
+    reply_to_is_own_message: Boolean(authorId && String(authorId) === String(botAccount ?? "")),
+  };
+}
+
+function summarizeReplyLikeFields(message) {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+  const explicitKeys = Object.keys(message).filter((key) => /reply|quote|refer|thread/i.test(key) && !/^topic/i.test(key));
+  const extensionEntries = ["serverExtension", "clientExtension", "localExtension"]
+    .map((key) => [key, message[key]])
+    .filter(([, value]) => typeof value === "string" && /reply|quote|refer|thread/i.test(value));
+  const keys = [...new Set([...explicitKeys, ...extensionEntries.map(([key]) => key)])];
+  if (keys.length === 0) {
+    return null;
+  }
+  const summary = {};
+  for (const key of keys) {
+    const value = message[key];
+    if (value && typeof value === "object") {
+      summary[key] = {
+        keys: Object.keys(value).slice(0, 20),
+        messageServerId: value.messageServerId ?? value.msgIdServer ?? null,
+        messageClientId: value.messageClientId ?? value.msgIdClient ?? null,
+        senderId: value.senderId ?? null,
+        text_present: typeof value.text === "string" && value.text.length > 0,
+      };
+      continue;
+    }
+    if (typeof value === "string") {
+      let parsedKeys = [];
+      try {
+        const parsed = JSON.parse(value);
+        parsedKeys = parsed && typeof parsed === "object" ? Object.keys(parsed).slice(0, 20) : [];
+      } catch {
+        parsedKeys = [];
+      }
+      summary[key] = {
+        length: value.length,
+        parsedKeys,
+      };
+      continue;
+    }
+    summary[key] = {
+      type: typeof value,
+      present: value !== undefined && value !== null,
+    };
+  }
+  return summary;
+}
+
 async function maybeTranscribeAudio(nim, attachment) {
   const voiceService = nim?.V2NIMMessageService;
   if (!voiceService?.voiceToText || !attachment?.url || !Number.isFinite(Number(attachment.duration)) || Number(attachment.duration) <= 0) {
@@ -759,16 +987,13 @@ async function maybeTranscribeAudio(nim, attachment) {
 
 export async function toInboundMessage(message, botAccount, nim = null) {
   const parsed = parseConversationId(message?.conversationId);
-  const pushIds = message?.pushConfig?.forcePushAccountIds ?? [];
+  const pushIds =
+    message?.pushConfig?.forcePushAccountIds ??
+    message?.forcePushAccountIds ??
+    message?.forcePushList ??
+    [];
   const mentioned = pushIds.includes(botAccount);
-  const typeMap = {
-    0: "text",
-    1: "image",
-    2: "audio",
-    3: "video",
-    6: "file",
-  };
-  const messageType = typeMap[message?.messageType] ?? "unknown";
+  const messageType = inferInboundMessageType(message);
   const attachment = normalizeAttachment(message?.attachment ?? message?.attach);
   let text = extractInboundText(messageType, message?.text, attachment);
 
@@ -778,22 +1003,39 @@ export async function toInboundMessage(message, botAccount, nim = null) {
       text = transcribedText;
     }
   }
+  if (mentioned && ["team", "superTeam", "qchat"].includes(parsed.sessionType)) {
+    text = stripLeadingMentionPrefix(text);
+  }
   const targetId = String(message?.receiverId ?? parsed.targetId ?? "");
-  const conversationName =
+  const senderId = String(message?.senderId ?? "");
+  const senderName = await resolveUserName(nim, senderId, message?.senderName);
+  const rawConversationName =
     parsed.sessionType === "team" || parsed.sessionType === "superTeam"
       ? await resolveTeamName(nim, targetId, parsed.sessionType)
-      : null;
+      : senderName;
+  const conversationName = rawConversationName
+    ? buildConversationLabel(parsed.sessionType === "p2p" ? "p2p" : "team", rawConversationName)
+    : null;
 
   const topicRefer = normalizeTopicRefer(message?.topicRefer);
   const topicInfo = topicRefer ? await resolveTopicInfo(nim, topicRefer) : null;
   const topicName = String(topicInfo?.topicName ?? "").trim() || null;
+  const replyContext = await resolveInboundReplyContext(message, botAccount, nim);
+  if (!replyContext) {
+    const replyDiagnostics = summarizeReplyLikeFields(message);
+    if (replyDiagnostics) {
+      console.info(`[nim] inbound reply context unresolved — fields: ${JSON.stringify(replyDiagnostics)}`);
+    }
+  }
 
   return {
     message_id: String(message?.messageServerId ?? message?.messageClientId ?? ""),
     client_message_id: String(message?.messageClientId ?? ""),
+    message_refer: deriveMessageRefer(message),
+    message_source: message?.messageSource ?? null,
     session_type: parsed.sessionType,
-    sender_id: String(message?.senderId ?? ""),
-    sender_name: message?.senderName ?? null,
+    sender_id: senderId,
+    sender_name: senderName,
     target_id: targetId,
     conversation_name: conversationName,
     text,
@@ -806,6 +1048,7 @@ export async function toInboundMessage(message, botAccount, nim = null) {
     topic_info: topicInfo,
     topic_name: topicName,
     thread_reply: message?.threadReply ?? null,
+    ...(replyContext ?? {}),
     from_self: String(message?.senderId ?? "") === String(botAccount ?? ""),
     raw: message,
   };

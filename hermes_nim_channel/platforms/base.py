@@ -41,6 +41,11 @@ class MessageEvent:
     raw: dict[str, Any]
     media_urls: list[str] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
+    reply_to_message_id: str | None = None
+    reply_to_text: str | None = None
+    reply_to_author_id: str | None = None
+    reply_to_author_name: str | None = None
+    reply_to_is_own_message: bool = False
 
 
 @dataclass(slots=True)
