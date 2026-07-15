@@ -22,7 +22,7 @@ Keep this managed block so `openspec update` can refresh the instructions.
 - Host project: `hermes-agent` (`https://github.com/NousResearch/hermes-agent`)
 - Goal: enable Hermes Agent to send and receive messages through the NetEase Yunxin NIM SDK.
 - NIM reference implementation: `openclaw-nim-channel`
-- Local reference path: `/Users/xumengxiang/Documents/00.NetEase/05.IM/openclaw-nim-channel`
+- Local reference path: keep a private checkout of `openclaw-nim-channel` outside this repository when parity checks are needed.
 - Functional target: keep this project aligned with the capabilities already implemented in `openclaw-nim-channel`, as long as Hermes exposes equivalent plugin hooks.
 
 ## Working Rules
