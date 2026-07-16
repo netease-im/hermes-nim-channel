@@ -5,7 +5,7 @@ context: |
   Type: Hermes Agent platform plugin for NetEase IM (NIM)
   Host integration: Hermes plugin entrypoints at repository root
   Runtime split: Python orchestration in hermes_nim_channel/, Node SDK bridge in bridge/
-  Reference baseline: /Users/xumengxiang/Documents/00.NetEase/05.IM/openclaw-nim-channel
+  Reference baseline: a private checkout of openclaw-nim-channel outside this repository
   Requirement: new NIM capabilities should first map to the reference implementation,
   then document only the Hermes-specific adaptation surface.
 

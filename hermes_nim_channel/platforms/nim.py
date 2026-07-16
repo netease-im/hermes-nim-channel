@@ -4,8 +4,9 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote, unquote
 
-from hermes_nim_channel.config import NimResolvedConfig, Platform, PlatformConfig, load_nim_config
+from hermes_nim_channel.config import NimResolvedConfig, Platform, PlatformConfig, load_nim_instances
 from hermes_nim_channel.inbound_media import (
     NimInboundAttachment,
     cache_attachment_bytes_local,
@@ -33,6 +34,7 @@ from hermes_nim_channel.session_titles import schedule_nim_session_title_pin
 logger = logging.getLogger(__name__)
 
 AttachmentLoader = Callable[[dict[str, Any], str], tuple[list[str], list[str]] | Awaitable[tuple[list[str], list[str]]]]
+BridgeFactory = Callable[[NimResolvedConfig], NodeBridgeProcess | Any]
 
 
 @dataclass(slots=True)
@@ -42,34 +44,76 @@ class ChatInfo:
     chat_name: str | None = None
 
 
+@dataclass(slots=True)
+class NimInstanceRuntime:
+    account_id: str
+    config: NimResolvedConfig
+    bridge: NodeBridgeProcess | Any
+    connected: bool = False
+
+
 class NimAdapter(BasePlatformAdapter):
     def __init__(
         self,
         config: PlatformConfig,
         *,
         bridge: NodeBridgeProcess | Any | None = None,
+        bridge_factory: BridgeFactory | None = None,
         attachment_loader: AttachmentLoader | None = None,
     ) -> None:
         super().__init__(config=config, platform=Platform.NIM)
-        self.resolved: NimResolvedConfig = load_nim_config(config)
-        self._bridge = bridge or NodeBridgeProcess(self.resolved.bridge_command)
+        self.instances: list[NimResolvedConfig] = load_nim_instances(config)
+        self.resolved: NimResolvedConfig = self.instances[0] if self.instances else NimResolvedConfig(False, None)
+        self._bridge_factory = bridge_factory
+        self._single_bridge_override = bridge
+        self._runtimes: dict[str, NimInstanceRuntime] = {}
         self._chat_cache: dict[str, ChatInfo] = {}
         self._attachment_loader = attachment_loader
 
     async def connect(self, *args: Any, **kwargs: Any) -> bool:
-        if not self.resolved.configured():
+        configured = [instance for instance in self.instances if instance.configured()]
+        if not configured:
             self.connected = False
             return False
-        await self._bridge.start(self.resolved, event_handler=self._on_bridge_event)
-        self.connected = True
-        return True
+        for index, instance in enumerate(configured):
+            account_id = instance.resolved_account_id()
+            bridge = self._make_bridge(instance, use_single_override=index == 0)
+            runtime = NimInstanceRuntime(account_id=account_id, config=instance, bridge=bridge)
+            self._runtimes[account_id] = runtime
+            try:
+                await bridge.start(
+                    instance,
+                    event_handler=lambda envelope, runtime_account_id=account_id: self._on_bridge_event(
+                        envelope,
+                        runtime_account_id,
+                    ),
+                )
+                runtime.connected = True
+            except Exception:
+                logger.exception("Failed to connect NIM instance: account_id=%s", account_id)
+                runtime.connected = False
+        self.connected = any(runtime.connected for runtime in self._runtimes.values())
+        return self.connected
 
     async def disconnect(self) -> None:
-        await self._bridge.stop()
+        for runtime in list(self._runtimes.values()):
+            try:
+                await runtime.bridge.stop()
+            finally:
+                runtime.connected = False
         self.connected = False
 
     async def health(self) -> dict[str, Any]:
-        return await self._bridge.health()
+        if len(self._runtimes) == 1:
+            runtime = next(iter(self._runtimes.values()))
+            return await runtime.bridge.health()
+        results: dict[str, Any] = {}
+        for account_id, runtime in self._runtimes.items():
+            try:
+                results[account_id] = await runtime.bridge.health()
+            except Exception as exc:
+                results[account_id] = {"status": "error", "error": str(exc)}
+        return {"instances": results}
 
     async def send(
         self,
@@ -78,21 +122,24 @@ class NimAdapter(BasePlatformAdapter):
         *,
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
-        session_type = self._infer_session_type(chat_id, metadata)
+        runtime, resolved, routed_chat_id = self._resolve_runtime_for_send(chat_id, metadata)
+        if runtime is None or resolved is None:
+            return SendResult(success=False, error="no NIM instance is connected for target")
+        session_type = self._infer_session_type(routed_chat_id, metadata)
         if session_type == "qchat":
-            target = parse_qchat_chat_id(chat_id)
+            target = parse_qchat_chat_id(routed_chat_id)
             if target is None:
                 return SendResult(success=False, error=f"invalid QChat target: {chat_id}")
             server_id, channel_id = target
             if not is_qchat_target_allowed(
-                policy=self.resolved.qchat_policy,
-                allow_from=self.resolved.qchat_allow_from,
+                policy=resolved.qchat_policy,
+                allow_from=resolved.qchat_allow_from,
                 server_id=server_id,
                 channel_id=channel_id,
             ):
                 return SendResult(success=False, error="qchat send blocked by policy")
-            result = await self._bridge.send_qchat_message(
-                chat_id=chat_id,
+            result = await runtime.bridge.send_qchat_message(
+                chat_id=routed_chat_id,
                 text=text,
                 session_type=session_type,
                 reply_to=(metadata or {}).get("reply_to"),
@@ -100,16 +147,16 @@ class NimAdapter(BasePlatformAdapter):
         else:
             meta = metadata or {}
             if meta.get("edit_message_id") or meta.get("edit"):
-                result = await self._bridge.edit_message(
-                    chat_id=chat_id,
+                result = await runtime.bridge.edit_message(
+                    chat_id=routed_chat_id,
                     text=text,
                     session_type=session_type,
                     message_id=meta.get("edit_message_id") or meta.get("message_id"),
                 )
             elif meta.get("stream"):
                 stream = meta.get("stream") if isinstance(meta.get("stream"), dict) else {}
-                result = await self._bridge.send_stream_text(
-                    chat_id=chat_id,
+                result = await runtime.bridge.send_stream_text(
+                    chat_id=routed_chat_id,
                     text=text,
                     session_type=session_type,
                     chunk_index=self._metadata_int(stream.get("chunk_index", stream.get("index", 0)), 0),
@@ -117,8 +164,8 @@ class NimAdapter(BasePlatformAdapter):
                     reply_to=meta.get("reply_to"),
                 )
             else:
-                result = await self._bridge.send_text(
-                    chat_id=chat_id,
+                result = await runtime.bridge.send_text(
+                    chat_id=routed_chat_id,
                     text=text,
                     session_type=session_type,
                     reply_to=meta.get("reply_to"),
@@ -211,14 +258,25 @@ class NimAdapter(BasePlatformAdapter):
             return ChatInfo(chat_id=chat_id, chat_type=ChatType.GROUP.value)
         return ChatInfo(chat_id=chat_id, chat_type=ChatType.DIRECT.value)
 
-    async def _on_bridge_event(self, envelope: dict[str, Any]) -> None:
+    def _make_bridge(self, instance: NimResolvedConfig, *, use_single_override: bool) -> NodeBridgeProcess | Any:
+        if use_single_override and self._single_bridge_override is not None:
+            return self._single_bridge_override
+        if self._bridge_factory is not None:
+            return self._bridge_factory(instance)
+        return NodeBridgeProcess(instance.bridge_command)
+
+    async def _on_bridge_event(self, envelope: dict[str, Any], account_id: str | None = None) -> None:
+        runtime = self._runtime_for_account(account_id, require_connected=False)
+        if runtime is None:
+            return
         if envelope.get("event") == "connection":
-            self._handle_connection_event(dict(envelope.get("payload") or {}))
+            self._handle_connection_event(dict(envelope.get("payload") or {}), runtime)
             return
         if envelope.get("event") != "message":
             return
         payload = dict(envelope.get("payload") or {})
-        ignore_reason = self._ignore_reason(payload)
+        payload["nim_account_id"] = runtime.account_id
+        ignore_reason = self._ignore_reason(payload, runtime.config)
         if ignore_reason:
             logger.info(
                 "Ignoring NIM inbound message: reason=%s session_type=%s sender=%s target=%s message_id=%s",
@@ -229,7 +287,7 @@ class NimAdapter(BasePlatformAdapter):
                 payload.get("message_id") or payload.get("client_message_id"),
             )
             return
-        event = await self._to_message_event(payload)
+        event = await self._to_message_event(payload, runtime.account_id)
         self._chat_cache[event.source.chat_id] = ChatInfo(
             chat_id=event.source.chat_id,
             chat_type=event.source.chat_type,
@@ -238,17 +296,18 @@ class NimAdapter(BasePlatformAdapter):
         await self.handle_message(event)
         schedule_nim_session_title_pin(event.source)
 
-    def _handle_connection_event(self, payload: dict[str, Any]) -> None:
+    def _handle_connection_event(self, payload: dict[str, Any], runtime: NimInstanceRuntime) -> None:
         status = str(payload.get("status") or "")
         if status == "connected":
-            self.connected = True
+            runtime.connected = True
         elif status in {"logout", "kickout", "disconnected"}:
-            self.connected = False
+            runtime.connected = False
+        self.connected = any(item.connected for item in self._runtimes.values())
 
     def _should_ignore(self, payload: dict[str, Any]) -> bool:
-        return self._ignore_reason(payload) is not None
+        return self._ignore_reason(payload, self.resolved) is not None
 
-    def _ignore_reason(self, payload: dict[str, Any]) -> str | None:
+    def _ignore_reason(self, payload: dict[str, Any], resolved: NimResolvedConfig) -> str | None:
         if "message_source" in payload and payload.get("message_source") != 1:
             return "non_online_message"
         if payload.get("from_self"):
@@ -256,20 +315,20 @@ class NimAdapter(BasePlatformAdapter):
         session_type = str(payload.get("session_type") or "p2p")
         sender_id = str(payload.get("sender_id") or "")
         if session_type == "p2p":
-            return None if self._is_allowed_direct_sender(sender_id) else "p2p_not_allowed"
+            return None if self._is_allowed_direct_sender(sender_id, resolved) else "p2p_not_allowed"
         if session_type in {"team", "superTeam"}:
-            if not self._is_allowed_group(str(payload.get("target_id") or "")):
+            if not self._is_allowed_group(str(payload.get("target_id") or ""), resolved):
                 return "group_not_allowed"
-            return None if self._is_mentioned(payload) else "group_not_mentioned"
+            return None if self._is_mentioned(payload, resolved) else "group_not_mentioned"
         if session_type == "qchat":
-            if not self._is_mentioned(payload):
+            if not self._is_mentioned(payload, resolved):
                 return "qchat_not_mentioned"
             server_id, channel_id = self._resolve_qchat_target(payload)
             if not server_id or not channel_id:
                 return "qchat_target_missing"
             allowed = is_qchat_allowed(
-                policy=self.resolved.qchat_policy,
-                allow_from=self.resolved.qchat_allow_from,
+                policy=resolved.qchat_policy,
+                allow_from=resolved.qchat_allow_from,
                 server_id=server_id,
                 channel_id=channel_id,
                 sender_accid=sender_id,
@@ -277,32 +336,32 @@ class NimAdapter(BasePlatformAdapter):
             return None if allowed else "qchat_not_allowed"
         return "unsupported_session_type"
 
-    def _is_allowed_direct_sender(self, sender_id: str) -> bool:
-        if self.resolved.p2p_policy == "disabled":
+    def _is_allowed_direct_sender(self, sender_id: str, resolved: NimResolvedConfig) -> bool:
+        if resolved.p2p_policy == "disabled":
             return False
-        if self.resolved.p2p_policy == "open":
+        if resolved.p2p_policy == "open":
             return True
-        if self.resolved.p2p_policy == "allowlist":
-            return sender_id in self.resolved.p2p_allow_from
-        if self.resolved.allow_all_users:
+        if resolved.p2p_policy == "allowlist":
+            return sender_id in resolved.p2p_allow_from
+        if resolved.allow_all_users:
             return True
-        if not self.resolved.allowed_users:
+        if not resolved.allowed_users:
             return True
-        return sender_id in self.resolved.allowed_users
+        return sender_id in resolved.allowed_users
 
-    def _is_allowed_group(self, target_id: str) -> bool:
-        policy = self.resolved.group_policy
+    def _is_allowed_group(self, target_id: str, resolved: NimResolvedConfig) -> bool:
+        policy = resolved.group_policy
         if policy == "disabled":
             return False
         if policy == "open":
             return True
-        return target_id in self.resolved.group_allowlist
+        return target_id in resolved.group_allowlist
 
-    def _is_mentioned(self, payload: dict[str, Any]) -> bool:
+    def _is_mentioned(self, payload: dict[str, Any], resolved: NimResolvedConfig) -> bool:
         if payload.get("mentioned") or payload.get("mention_all"):
             return True
         force_push_ids = {str(item) for item in payload.get("force_push_account_ids") or []}
-        account = self.resolved.credentials.account if self.resolved.credentials else ""
+        account = resolved.credentials.account if resolved.credentials else ""
         return bool(account and account in force_push_ids)
 
     def _resolve_qchat_target(self, payload: dict[str, Any]) -> tuple[str, str]:
@@ -315,7 +374,7 @@ class NimAdapter(BasePlatformAdapter):
             return server_id, channel_id
         return "", ""
 
-    async def _to_message_event(self, payload: dict[str, Any]) -> MessageEvent:
+    async def _to_message_event(self, payload: dict[str, Any], account_id: str | None = None) -> MessageEvent:
         session_type = str(payload.get("session_type") or "p2p")
         sender_id = str(payload.get("sender_id") or "")
         target_id = str(payload.get("target_id") or "")
@@ -332,6 +391,8 @@ class NimAdapter(BasePlatformAdapter):
             chat_id = build_qchat_chat_id(server_id, channel_id) if server_id and channel_id else target_id or "qchat:unknown"
         else:
             chat_id = f"user:{sender_id}" if session_type == "p2p" else f"team:{target_id}"
+        if self._multi_instance_enabled() and account_id:
+            chat_id = self._with_account_prefix(account_id, chat_id)
         source = MessageSource(
             platform=self.platform.value,
             chat_id=chat_id,
@@ -366,6 +427,7 @@ class NimAdapter(BasePlatformAdapter):
                     "quick_comment": payload.get("quick_comment"),
                     "channel_topic": payload.get("channel_topic"),
                     "channel_info": payload.get("channel_info"),
+                    "nim_account_id": payload.get("nim_account_id") or account_id,
                 },
             },
             media_urls=media_urls,
@@ -391,6 +453,52 @@ class NimAdapter(BasePlatformAdapter):
         if chat_id.startswith("team:"):
             return "team"
         return "p2p"
+
+    def _runtime_for_account(self, account_id: str | None, *, require_connected: bool = True) -> NimInstanceRuntime | None:
+        if account_id and account_id in self._runtimes:
+            runtime = self._runtimes[account_id]
+            return runtime if runtime.connected or not require_connected else None
+        candidates = [runtime for runtime in self._runtimes.values() if runtime.connected or not require_connected]
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def _multi_instance_enabled(self) -> bool:
+        return len([instance for instance in self.instances if instance.configured()]) > 1
+
+    def _resolve_runtime_for_send(
+        self,
+        chat_id: str,
+        metadata: dict[str, Any] | None,
+    ) -> tuple[NimInstanceRuntime | None, NimResolvedConfig | None, str]:
+        account_id = None
+        routed_chat_id = chat_id
+        if metadata:
+            account_id = self._optional_str(
+                metadata.get("nim_account_id")
+                or metadata.get("account_id")
+                or metadata.get("accountId")
+            )
+        parsed = self._parse_account_prefixed_chat_id(chat_id)
+        if parsed is not None:
+            account_id, routed_chat_id = parsed
+        runtime = self._runtime_for_account(account_id)
+        if runtime is None:
+            return None, None, routed_chat_id
+        return runtime, runtime.config, routed_chat_id
+
+    @staticmethod
+    def _with_account_prefix(account_id: str, chat_id: str) -> str:
+        return f"acct:{quote(account_id, safe='')}:{chat_id}"
+
+    @staticmethod
+    def _parse_account_prefixed_chat_id(chat_id: str) -> tuple[str, str] | None:
+        if not chat_id.startswith("acct:"):
+            return None
+        parts = chat_id.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return None
+        return unquote(parts[1]), parts[2]
 
     def _to_message_type(self, value: str) -> MessageType:
         try:
@@ -425,11 +533,14 @@ class NimAdapter(BasePlatformAdapter):
         reply_to: str | None,
         metadata: dict[str, Any] | None,
     ) -> SendResult:
-        session_type = self._infer_session_type(chat_id, metadata)
+        runtime, _resolved, routed_chat_id = self._resolve_runtime_for_send(chat_id, metadata)
+        if runtime is None:
+            return SendResult(success=False, error="no NIM instance is connected for target")
+        session_type = self._infer_session_type(routed_chat_id, metadata)
         if session_type == "qchat":
             return SendResult(success=False, error="qchat media is not supported")
-        result = await self._bridge.send_media(
-            chat_id=chat_id,
+        result = await runtime.bridge.send_media(
+            chat_id=routed_chat_id,
             file_path=str(Path(file_path)),
             media_kind=media_kind,
             session_type=session_type,

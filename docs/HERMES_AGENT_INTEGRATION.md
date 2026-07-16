@@ -22,7 +22,7 @@
 
 ```bash
 mkdir -p ~/.hermes/plugins
-ln -sfn /Users/xumengxiang/Documents/00.NetEase/05.IM/hermes-nim-channel \
+ln -sfn /path/to/hermes-nim-channel \
   ~/.hermes/plugins/hermes-nim-channel
 ```
 
@@ -31,7 +31,7 @@ ln -sfn /Users/xumengxiang/Documents/00.NetEase/05.IM/hermes-nim-channel \
 ```bash
 mkdir -p ~/.hermes/plugins/hermes-nim-channel
 rsync -a --delete \
-  /Users/xumengxiang/Documents/00.NetEase/05.IM/hermes-nim-channel/ \
+  /path/to/hermes-nim-channel/ \
   ~/.hermes/plugins/hermes-nim-channel/
 ```
 
@@ -62,16 +62,19 @@ node --test bridge/test/*.test.mjs
 最小配置只需要凭证：
 
 ```bash
-export NIM_CREDENTIALS='appKey|botAccid|token'
+export NIM_CREDENTIALS='<app-key>|<bot-accid>|<token>'
 ```
 
 也可拆分配置：
 
 ```bash
-export NIM_APP_KEY='appKey'
-export NIM_ACCOUNT='botAccid'
-export NIM_TOKEN='token'
+export NIM_APP_KEY='<app-key>'
+export NIM_ACCOUNT='<bot-accid>'
+export NIM_TOKEN='<token>'
 ```
+
+多实例可配置 `NIM_INSTANCES` JSON 数组，最多 3 个实例。每个实例派生
+`accountId=<app-key>:<accid>`，并独立维护登录连接、策略和 bridge 进程。
 
 建议显式配置消息准入策略：
 
@@ -145,6 +148,7 @@ hermes doctor
 - P2P：`user:<accid>`，例如 `user:alice`。
 - 群：`team:<teamId>`，例如 `team:123456`。
 - QChat：`qchat:<serverId>:<channelId>`，例如 `qchat:server-a:channel-b`。
+- 多实例：`acct:<url-encoded-account-id>:` + 上述目标，例如 `acct:app%3Abot-a:user:alice`。
 
 ## 功能验证清单
 
