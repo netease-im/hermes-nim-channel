@@ -221,6 +221,7 @@ class NodeBridgeProcess:
         text: str,
         session_type: str,
         reply_to: str | None = None,
+        topic_id: int | None = None,
     ) -> dict[str, Any]:
         response = await self.request(
             "send_message",
@@ -229,6 +230,7 @@ class NodeBridgeProcess:
                 "text": text,
                 "session_type": session_type,
                 "reply_to": reply_to,
+                "topic_id": topic_id,
             },
         )
         if response.get("status") != "ok":
@@ -264,6 +266,7 @@ class NodeBridgeProcess:
         media_kind: str,
         session_type: str,
         reply_to: str | None = None,
+        topic_id: int | None = None,
     ) -> dict[str, Any]:
         response = await self.request(
             "send_media",
@@ -273,6 +276,7 @@ class NodeBridgeProcess:
                 "media_kind": media_kind,
                 "session_type": session_type,
                 "reply_to": reply_to,
+                "topic_id": topic_id,
             },
         )
         if response.get("status") != "ok":
@@ -288,6 +292,8 @@ class NodeBridgeProcess:
         chunk_index: int = 0,
         is_complete: bool = True,
         reply_to: str | None = None,
+        stream_id: str | None = None,
+        topic_id: int | None = None,
     ) -> dict[str, Any]:
         response = await self.request(
             "send_stream_message",
@@ -298,6 +304,8 @@ class NodeBridgeProcess:
                 "chunk_index": chunk_index,
                 "is_complete": is_complete,
                 "reply_to": reply_to,
+                "stream_id": stream_id,
+                "topic_id": topic_id,
             },
         )
         if response.get("status") != "ok":

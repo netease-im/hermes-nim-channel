@@ -8,33 +8,38 @@ import {
   addBatchMetadata,
   addProcessingQuickComment,
   collectReadReceiptBatches,
+  canFallbackMissingReply,
+  clearBridgeRuntimeState,
   createStreamChunkParams,
+  applyBridgeConnectionStatus,
   InboundBatchEmitter,
   inboundBatchKey,
   isP2pApplicantAllowed,
+  isBridgeRuntimeConnected,
   normalizeTarget,
   normalizeConnectionStatus,
   normalizeSendResult,
   parseBridgeConfig,
   ReplyMessageCache,
+  StreamSessionRegistry,
+  TopicReplyContextRegistry,
   sendMediaMaybeTopicReply,
   sendEditReplacementMessage,
-  sendStreamTextMessage,
+  sendStatefulStreamChunk,
   sendTextReplyMessage,
+  sendTopicStreamChunk,
   shouldDispatchInboundMessage,
   splitMessageIntoChunks,
   toInboundMessage,
 } from "./src/config.mjs";
 import { createMediaMessage, normalizeMediaKind } from "./src/media.mjs";
 import {
-  deriveQChatServerIds,
-  createQChatChannelInfoResolver,
-  enrichQChatMessageWithChannelInfo,
   isQChatTargetAllowed,
-  normalizeQChatMessage,
-  normalizeQChatSystemNotification,
   normalizeQChatTarget,
+  QChatReplyCache,
+  sendQChatText,
 } from "./src/qchat.mjs";
+import { createQChatRuntime } from "./src/qchat-runtime.mjs";
 import {
   decodeJsonl,
   errorResponse,
@@ -73,7 +78,7 @@ function emit(message) {
   writeMessage(process.stdout, message);
 }
 
-async function cleanupRuntime() {
+async function cleanupRuntime(targetRuntime = runtime) {
   if (connectionRuntime) {
     try {
       connectionRuntime.stop();
@@ -92,15 +97,16 @@ async function cleanupRuntime() {
     } catch {}
     qchatRuntime = null;
   }
-  if (!runtime) {
+  if (!targetRuntime) {
     return;
   }
 
   try {
-    runtime.inboundBatcher?.stop();
+    targetRuntime.inboundBatcher?.stop();
   } catch {}
-  if (Array.isArray(runtime.quickCommentCleanups)) {
-    for (const item of runtime.quickCommentCleanups.splice(0)) {
+  clearBridgeRuntimeState(targetRuntime);
+  if (Array.isArray(targetRuntime.quickCommentCleanups)) {
+    for (const item of targetRuntime.quickCommentCleanups.splice(0)) {
       try {
         clearTimeout(item.timeout);
       } catch {}
@@ -111,14 +117,16 @@ async function cleanupRuntime() {
   }
 
   try {
-    await runtime.loginService.logout();
+    await targetRuntime.loginService.logout();
   } catch {}
 
   try {
-    await runtime.nim.destroy?.();
+    await targetRuntime.nim.destroy?.();
   } catch {}
 
-  runtime = null;
+  if (runtime === targetRuntime) {
+    runtime = null;
+  }
 }
 
 function setupConnectionRuntime(loginService) {
@@ -128,8 +136,7 @@ function setupConnectionRuntime(loginService) {
 
   const emitConnection = (payload) => {
     if (runtime) {
-      runtime.connectionStatus = payload.status ?? "unknown";
-      runtime.connectionReason = payload.reason ?? "";
+      applyBridgeConnectionStatus(runtime, payload);
     }
     emit(eventMessage("connection", payload));
   };
@@ -221,202 +228,6 @@ function setupFriendRuntime(nim, config) {
   };
 }
 
-async function discoverJoinedQChatServers(nim) {
-  const serverIds = [];
-  let timestamp = 0;
-  const pageLimit = 100;
-
-  for (let page = 0; page < 20; page += 1) {
-    const resp = await nim.qchatServer.getServersByPage({
-      timestamp,
-      limit: pageLimit,
-    });
-
-    const servers = resp.datas ?? [];
-    if (servers.length === 0) {
-      break;
-    }
-
-    for (const server of servers) {
-      if (server?.serverId) {
-        serverIds.push(String(server.serverId));
-      }
-    }
-
-    const hasMore = resp.listQueryTag?.hasMore ?? servers.length >= pageLimit;
-    if (!hasMore) {
-      break;
-    }
-
-    const lastServer = servers[servers.length - 1];
-    if (lastServer?.createTime) {
-      timestamp = lastServer.createTime;
-      continue;
-    }
-    break;
-  }
-
-  return [...new Set(serverIds)];
-}
-
-async function setupQChatRuntime(nim, config) {
-  if (!nim?.qchatMsg || !nim?.qchatServer) {
-    console.warn("[qchat] qchat APIs are unavailable on this SDK instance");
-    return null;
-  }
-
-  const qchatConfig = config?.qchat ?? {};
-  const policy = String(qchatConfig.policy ?? "open").trim() || "open";
-  const allowFrom = Array.isArray(qchatConfig.allowFrom) ? qchatConfig.allowFrom : [];
-  const isEffectivelyDisabled = policy === "disabled" || (policy === "allowlist" && allowFrom.length === 0);
-  if (isEffectivelyDisabled) {
-    console.info(
-      `[qchat] disabled — policy: ${policy}, allowFrom count: ${allowFrom.length}`,
-    );
-    return null;
-  }
-
-  const subscribedServerIds = new Set();
-  const logPrefix = "[qchat]";
-  const resolveChannelInfo = createQChatChannelInfoResolver(nim);
-
-  const subscribeServer = async (serverId) => {
-    if (!serverId || subscribedServerIds.has(serverId)) {
-      return;
-    }
-    const resp = await nim.qchatServer.subscribeAllChannel({
-      type: 1,
-      serverIds: [serverId],
-    });
-    const failed = resp.failServerIds ?? [];
-    if (failed.includes(serverId)) {
-      console.warn(`${logPrefix} subscribe failed — server: ${serverId}`);
-      return;
-    }
-    subscribedServerIds.add(serverId);
-    console.info(`${logPrefix} subscribed — server: ${serverId}`);
-  };
-
-  const refreshSubscriptions = async () => {
-    const serverIds = policy === "allowlist" ? deriveQChatServerIds(allowFrom) : await discoverJoinedQChatServers(nim);
-    if (serverIds.length === 0) {
-      console.info(`${logPrefix} no servers to subscribe`);
-      return;
-    }
-    const resp = await nim.qchatServer.subscribeAllChannel({
-      type: 1,
-      serverIds,
-    });
-    const failed = new Set(resp.failServerIds ?? []);
-    for (const serverId of serverIds) {
-      if (!failed.has(serverId)) {
-        subscribedServerIds.add(serverId);
-      }
-    }
-    if (failed.size > 0) {
-      console.warn(`${logPrefix} subscribe failed — servers: ${[...failed].join(", ")}`);
-    }
-  };
-
-  const messageHandler = (message) => {
-    void (async () => {
-      const normalized = normalizeQChatMessage(message, config.credentials.account);
-      if (!normalized) {
-        return;
-      }
-      let enriched = normalized;
-      try {
-        enriched = await enrichQChatMessageWithChannelInfo(normalized, resolveChannelInfo);
-      } catch (error) {
-        console.warn(`${logPrefix} message enrich failed — error: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      emit(eventMessage("message", enriched));
-    })().catch((error) => {
-      console.warn(`${logPrefix} message handling failed — error: ${error instanceof Error ? error.message : String(error)}`);
-    });
-  };
-
-  const systemNotificationHandler = async (notification) => {
-    const normalized = normalizeQChatSystemNotification(notification);
-    if (normalized.type === "serverMemberInvite") {
-      const serverId =
-        normalized.serverId ??
-        normalized.server_id ??
-        normalized.attach?.serverInfo?.serverId;
-      const inviterAccid = normalized.fromAccount ?? normalized.from_accid;
-      const requestId = normalized.attach?.requestId;
-      if (!serverId || !inviterAccid || !requestId) {
-        return;
-      }
-      if (policy === "disabled") {
-        return;
-      }
-      if (policy === "allowlist") {
-        const allowedServerIds = new Set(deriveQChatServerIds(allowFrom));
-        if (!allowedServerIds.has(serverId)) {
-          return;
-        }
-      }
-      try {
-        await nim.qchatServer.acceptServerInvite({
-          serverId,
-          accid: inviterAccid,
-          recordInfo: { requestId },
-        });
-      } catch (error) {
-        console.warn(
-          `${logPrefix} invite accept failed — server: ${serverId}, error: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      return;
-    }
-
-    if (normalized.type === "serverMemberInviteDone") {
-      const serverId = normalized.serverId ?? normalized.server_id;
-      if (!serverId || subscribedServerIds.has(serverId)) {
-        return;
-      }
-      try {
-        await subscribeServer(serverId);
-      } catch (error) {
-        console.warn(
-          `${logPrefix} subscribe after invite failed — server: ${serverId}, error: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-  };
-
-  nim.qchatMsg.on("message", messageHandler);
-  nim.qchatMsg.on("systemNotification", systemNotificationHandler);
-
-  try {
-    await refreshSubscriptions();
-  } catch (error) {
-    console.warn(
-      `${logPrefix} initial subscription failed — error: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  return {
-    stop: async () => {
-      try {
-        nim.qchatMsg.off?.("message", messageHandler);
-      } catch {}
-      try {
-        nim.qchatMsg.off?.("systemNotification", systemNotificationHandler);
-      } catch {}
-      if (subscribedServerIds.size > 0) {
-        try {
-          await nim.qchatServer.subscribeAllChannel({
-            type: 1,
-            serverIds: [],
-          });
-        } catch {}
-      }
-    },
-  };
-}
-
 async function handleConnect(id, params) {
   await cleanupRuntime();
 
@@ -437,6 +248,9 @@ async function handleConnect(id, params) {
   const messageService = nim.V2NIMMessageService;
   const messageCreator = nim.V2NIMMessageCreator;
   const replyCache = new ReplyMessageCache();
+  const streamSessions = new StreamSessionRegistry();
+  const topicContexts = new TopicReplyContextRegistry();
+  const qchatReplyCache = new QChatReplyCache();
   const quickCommentCleanups = [];
   const inboundBatcher = new InboundBatchEmitter({
     debounceMs: config.inboundDebounceMs,
@@ -471,6 +285,14 @@ async function handleConnect(id, params) {
           }
           replyCache.add(message);
           const payload = await toInboundMessage(message, config.credentials.account, nim);
+          if (payload.topic_refer) {
+            topicContexts.add({
+              accountId: config.credentials.account,
+              targetId: payload.sender_id,
+              topic: payload.topic_refer,
+              originalMessage: message,
+            });
+          }
           const quickComment = await addProcessingQuickComment({
             nim,
             message,
@@ -496,28 +318,40 @@ async function handleConnect(id, params) {
     })();
   });
 
-  const aiBot = config.legacyLogin ? 0 : 2;
-  console.info(
-    `[nim] login started — account: ${config.credentials.account}, aiBot: ${aiBot} (legacyLogin: ${config.legacyLogin})`,
-  );
-  await loginService.login(config.credentials.account, config.credentials.token, { aiBot });
-  console.info(`[nim] login successful — account: ${config.credentials.account}, aiBot: ${aiBot}`);
-
-  runtime = {
+  const pendingRuntime = {
     nim,
     loginService,
     messageService,
     messageCreator,
     replyCache,
+    streamSessions,
+    topicContexts,
+    qchatReplyCache,
     inboundBatcher,
     quickCommentCleanups,
-    connectionStatus: "connected",
+    connectionStatus: "connecting",
     connectionReason: "login",
     config,
   };
+  const aiBot = config.legacyLogin ? 0 : 2;
+  console.info(
+    `[nim] login started — account: ${config.credentials.account}, aiBot: ${aiBot} (legacyLogin: ${config.legacyLogin})`,
+  );
+  try {
+    qchatRuntime = createQChatRuntime(nim, config, qchatReplyCache, {
+      emitMessage: (payload) => emit(eventMessage("message", payload)),
+    });
+    await loginService.login(config.credentials.account, config.credentials.token, { aiBot });
+  } catch (error) {
+    await cleanupRuntime(pendingRuntime);
+    throw error;
+  }
+  console.info(`[nim] login successful — account: ${config.credentials.account}, aiBot: ${aiBot}`);
+  runtime = pendingRuntime;
+  runtime.connectionStatus = "connected";
   connectionRuntime = setupConnectionRuntime(loginService);
   friendRuntime = setupFriendRuntime(nim, config);
-  qchatRuntime = await setupQChatRuntime(nim, config);
+  await qchatRuntime?.activate?.();
 
   emit(
     okResponse(id, {
@@ -583,7 +417,7 @@ async function handleDisconnect(id) {
 async function handleHealth(id) {
   emit(
     okResponse(id, {
-      connected: Boolean(runtime) && runtime.connectionStatus !== "disconnected" && runtime.connectionStatus !== "logout" && runtime.connectionStatus !== "kickout",
+      connected: isBridgeRuntimeConnected(runtime),
       account: runtime?.config?.credentials?.account ?? null,
       connection_status: runtime?.connectionStatus ?? "disconnected",
       connection_reason: runtime?.connectionReason ?? "",
@@ -600,7 +434,7 @@ function textSendOptions() {
 }
 
 async function sendCreatedMessage(message, conversationId) {
-  if (!runtime) {
+  if (!isBridgeRuntimeConnected(runtime)) {
     throw new Error("bridge is not connected");
   }
   if (!message) {
@@ -608,7 +442,7 @@ async function sendCreatedMessage(message, conversationId) {
   }
 
   const { messageService } = runtime;
-  if (!runtime) {
+  if (!isBridgeRuntimeConnected(runtime)) {
     throw new Error("bridge is not connected");
   }
 
@@ -710,8 +544,31 @@ async function resolveReplyOriginalMessage(replyTo) {
   return null;
 }
 
+function resolveOutboundTopicContext(target, params) {
+  const topicId = Number(params?.topic_id ?? params?.topicId ?? target?.topicId);
+  const replyTo = String(params?.reply_to ?? "").trim();
+  const context = runtime.topicContexts.resolve({
+    accountId: runtime.config.credentials.account,
+    targetId: target.id,
+    topicId,
+    replyTo,
+  });
+  return {
+    context,
+    topicId: Number.isFinite(topicId) && topicId > 0 ? topicId : null,
+    replyTo,
+  };
+}
+
+function matchesRequestedTopic(originalMessage, topicId) {
+  if (!topicId) {
+    return true;
+  }
+  return Number(originalMessage?.topicRefer?.topicId) === Number(topicId);
+}
+
 async function handleSendMessage(id, params) {
-  if (!runtime) {
+  if (!isBridgeRuntimeConnected(runtime)) {
     throw new Error("bridge is not connected");
   }
 
@@ -722,13 +579,24 @@ async function handleSendMessage(id, params) {
     target.sessionType,
   );
   const chunks = splitMessageIntoChunks(params?.text ?? "", runtime.config?.textChunkLimit);
+  const topicResolution = resolveOutboundTopicContext(target, params);
+  let originalMessage = topicResolution.context?.originalMessage
+    ?? (topicResolution.replyTo ? await resolveReplyOriginalMessage(topicResolution.replyTo) : null);
+  if (!topicResolution.context && !matchesRequestedTopic(originalMessage, topicResolution.topicId)) {
+    originalMessage = null;
+  }
+  if (!originalMessage && !canFallbackMissingReply({
+    replyTo: topicResolution.replyTo,
+    topicId: topicResolution.topicId,
+  })) {
+    throw new Error(`reply target not found: ${topicResolution.replyTo}`);
+  }
+  const fallbackMetadata = {
+    ...(topicResolution.topicId && !topicResolution.context ? { topic_fallback: true } : {}),
+    ...(topicResolution.replyTo && !originalMessage ? { reply_fallback: true } : {}),
+  };
 
-  const replyTo = String(params?.reply_to ?? "").trim();
-  if (replyTo) {
-    const originalMessage = await resolveReplyOriginalMessage(replyTo);
-    if (!originalMessage) {
-      throw new Error(`reply target not found: ${replyTo}`);
-    }
+  if (originalMessage) {
     const results = [];
     for (const chunk of chunks) {
       const message = runtime.messageCreator.createTextMessage(chunk);
@@ -744,7 +612,7 @@ async function handleSendMessage(id, params) {
       });
       results.push(normalizeSendResult(sendResult));
     }
-    emit(okResponse(id, responseFromChunkResults(results)));
+    emit(okResponse(id, { ...responseFromChunkResults(results), ...fallbackMetadata }));
     return;
   }
 
@@ -757,11 +625,11 @@ async function handleSendMessage(id, params) {
     results.push(await sendCreatedMessage(message, conversationId));
   }
 
-  emit(okResponse(id, responseFromChunkResults(results)));
+  emit(okResponse(id, { ...responseFromChunkResults(results), ...fallbackMetadata }));
 }
 
 async function handleSendStreamMessage(id, params) {
-  if (!runtime) {
+  if (!isBridgeRuntimeConnected(runtime)) {
     throw new Error("bridge is not connected");
   }
 
@@ -769,35 +637,89 @@ async function handleSendStreamMessage(id, params) {
   const conversationId = buildConversationId(runtime.nim, target.id, target.sessionType);
   const text = String(params?.text ?? "");
   const chunkIndex = Number(params?.chunk_index ?? params?.chunkIndex ?? 0);
-  const isComplete = Boolean(params?.is_complete ?? params?.isComplete ?? true);
+  const rawComplete = params?.is_complete ?? params?.isComplete ?? true;
+  const isComplete = typeof rawComplete === "boolean"
+    ? rawComplete
+    : !["0", "false", "no", "off"].includes(String(rawComplete).trim().toLowerCase());
   const streamChunkParams = createStreamChunkParams({ text, chunkIndex, isComplete });
-  const replyTo = String(params?.reply_to ?? "").trim();
-  const originalMessage = replyTo ? await resolveReplyOriginalMessage(replyTo) : null;
-  if (replyTo && !originalMessage) {
-    throw new Error(`reply target not found: ${replyTo}`);
-  }
-  const message = runtime.messageCreator.createTextMessage(text);
-  if (!message) {
-    throw new Error("failed to create stream message");
+  const topicResolution = resolveOutboundTopicContext(target, params);
+  const streamId = String(params?.stream_id ?? params?.streamId ?? "").trim();
+  let originalMessage = topicResolution.context?.originalMessage
+    ?? (topicResolution.replyTo ? await resolveReplyOriginalMessage(topicResolution.replyTo) : null);
+  if (!topicResolution.context && !matchesRequestedTopic(originalMessage, topicResolution.topicId)) {
+    originalMessage = null;
   }
 
-  const sent = await sendStreamTextMessage({
+  if (topicResolution.topicId) {
+    if (!originalMessage) {
+      const message = runtime.messageCreator.createTextMessage(text);
+      if (!message) {
+        throw new Error("failed to create Topic stream fallback message");
+      }
+      const fallbackResult = await sendCreatedMessage(message, conversationId);
+      emit(okResponse(id, {
+        ...fallbackResult,
+        stream_id: streamId,
+        stream_fallback: true,
+        topic_fallback: true,
+      }));
+      return;
+    }
+    const topicResult = await sendTopicStreamChunk({
+      nim: runtime.nim,
+      messageCreator: runtime.messageCreator,
+      text,
+      originalMessage,
+      options: textSendOptions(),
+    });
+    emit(okResponse(id, {
+      ...topicResult,
+      stream_id: streamId,
+      topic_stream_chunked: true,
+    }));
+    return;
+  }
+
+  if (!originalMessage && !canFallbackMissingReply({
+    replyTo: topicResolution.replyTo,
+    topicId: topicResolution.topicId,
+  })) {
+    throw new Error(`reply target not found: ${topicResolution.replyTo}`);
+  }
+  const streamKey = runtime.streamSessions.key({
+    streamId,
+    accountId: runtime.config.credentials.account,
+    targetId: target.id,
+    sessionType: target.sessionType,
+    replyTo: topicResolution.replyTo,
+    topicId: topicResolution.topicId,
+  });
+  const sent = await sendStatefulStreamChunk({
+    registry: runtime.streamSessions,
+    key: streamKey,
+    messageCreator: runtime.messageCreator,
     messageService: runtime.messageService,
-    message,
+    text,
     conversationId,
     originalMessage,
     options: textSendOptions(),
     streamChunkParams,
-    sendOrdinary: () => sendCreatedMessage(message, conversationId),
+    isComplete,
+    sendOrdinary: (message) => sendCreatedMessage(message, conversationId),
   });
   const result = sent.mode === "fallback"
     ? { ...sent.result, stream_fallback: true }
     : normalizeSendResult(sent.result);
-  emit(okResponse(id, result));
+  emit(okResponse(id, {
+    ...result,
+    stream_id: streamId || streamKey,
+    ...(topicResolution.topicId && !topicResolution.context ? { topic_fallback: true } : {}),
+    ...(topicResolution.replyTo && !originalMessage ? { reply_fallback: true } : {}),
+  }));
 }
 
 async function handleEditMessage(id, params) {
-  if (!runtime) {
+  if (!isBridgeRuntimeConnected(runtime)) {
     throw new Error("bridge is not connected");
   }
   const target = normalizeTarget(params?.chat_id, params?.session_type);
@@ -812,7 +734,7 @@ async function handleEditMessage(id, params) {
 }
 
 async function handleSendQChatMessage(id, params) {
-  if (!runtime) {
+  if (!isBridgeRuntimeConnected(runtime)) {
     throw new Error("bridge is not connected");
   }
   if (!runtime.nim?.qchatMsg) {
@@ -834,23 +756,27 @@ async function handleSendQChatMessage(id, params) {
     throw new Error("qchat send blocked by policy");
   }
 
-  const response = await runtime.nim.qchatMsg.sendMessage({
-    serverId: target.serverId,
-    channelId: target.channelId,
-    type: "text",
-    body: String(params?.text ?? ""),
+  const replyTo = String(params?.reply_to ?? "").trim();
+  const originalMessage = replyTo ? runtime.qchatReplyCache.get(replyTo) : null;
+  const sent = await sendQChatText({
+    qchatMsg: runtime.nim.qchatMsg,
+    target,
+    text: params?.text,
+    originalMessage,
   });
+  const response = sent.response;
 
   emit(
     okResponse(id, {
       message_id: String(response?.message?.msgIdServer ?? response?.msgIdServer ?? ""),
       client_message_id: String(response?.message?.msgIdClient ?? response?.msgIdClient ?? ""),
+      ...(replyTo && sent.mode !== "reply" ? { reply_fallback: true } : {}),
     }),
   );
 }
 
 async function handleSendMedia(id, params) {
-  if (!runtime) {
+  if (!isBridgeRuntimeConnected(runtime)) {
     throw new Error("bridge is not connected");
   }
 
@@ -877,8 +803,12 @@ async function handleSendMedia(id, params) {
     throw new Error(`failed to create ${mediaKind} message`);
   }
 
-  const replyTo = String(params?.reply_to ?? "").trim();
-  const originalMessage = replyTo ? runtime.replyCache.get(replyTo) : null;
+  const topicResolution = resolveOutboundTopicContext(target, params);
+  let originalMessage = topicResolution.context?.originalMessage
+    ?? (topicResolution.replyTo ? await resolveReplyOriginalMessage(topicResolution.replyTo) : null);
+  if (!topicResolution.context && !matchesRequestedTopic(originalMessage, topicResolution.topicId)) {
+    originalMessage = null;
+  }
   const mediaSend = await sendMediaMaybeTopicReply({
     nim: runtime.nim,
     message,
@@ -889,7 +819,11 @@ async function handleSendMedia(id, params) {
   const result = mediaSend.usedTopicReply
     ? normalizeSendResult(mediaSend.result)
     : mediaSend.result;
-  emit(okResponse(id, result));
+  emit(okResponse(id, {
+    ...result,
+    ...(topicResolution.topicId && !topicResolution.context ? { topic_fallback: true } : {}),
+    ...(topicResolution.replyTo && !originalMessage ? { reply_fallback: true } : {}),
+  }));
 }
 
 async function handleRequest(message) {

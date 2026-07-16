@@ -30,6 +30,14 @@ from hermes_nim_channel.platforms.base import (
 )
 from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
 from hermes_nim_channel.session_titles import schedule_nim_session_title_pin
+from hermes_nim_channel.targets import (
+    append_topic_to_conversation_name,
+    build_topic_chat_id,
+    derive_stream_id,
+    qchat_context_text,
+    qchat_media_fallback_text,
+    resolve_topic_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +134,7 @@ class NimAdapter(BasePlatformAdapter):
         if runtime is None or resolved is None:
             return SendResult(success=False, error="no NIM instance is connected for target")
         session_type = self._infer_session_type(routed_chat_id, metadata)
+        topic_id = resolve_topic_id(routed_chat_id, metadata)
         if session_type == "qchat":
             target = parse_qchat_chat_id(routed_chat_id)
             if target is None:
@@ -155,13 +164,20 @@ class NimAdapter(BasePlatformAdapter):
                 )
             elif meta.get("stream"):
                 stream = meta.get("stream") if isinstance(meta.get("stream"), dict) else {}
+                resolved_reply_to = meta.get("reply_to")
                 result = await runtime.bridge.send_stream_text(
                     chat_id=routed_chat_id,
                     text=text,
                     session_type=session_type,
                     chunk_index=self._metadata_int(stream.get("chunk_index", stream.get("index", 0)), 0),
                     is_complete=self._metadata_bool(stream.get("is_complete", stream.get("finish", True)), True),
-                    reply_to=meta.get("reply_to"),
+                    reply_to=resolved_reply_to,
+                    stream_id=derive_stream_id(
+                        routed_chat_id,
+                        resolved_reply_to,
+                        stream.get("stream_id") or stream.get("id") or meta.get("stream_id"),
+                    ),
+                    topic_id=topic_id,
                 )
             else:
                 result = await runtime.bridge.send_text(
@@ -169,6 +185,7 @@ class NimAdapter(BasePlatformAdapter):
                     text=text,
                     session_type=session_type,
                     reply_to=meta.get("reply_to"),
+                    topic_id=topic_id,
                 )
         return SendResult(
             success=True,
@@ -390,23 +407,36 @@ class NimAdapter(BasePlatformAdapter):
                 channel_id = ""
             chat_id = build_qchat_chat_id(server_id, channel_id) if server_id and channel_id else target_id or "qchat:unknown"
         else:
-            chat_id = f"user:{sender_id}" if session_type == "p2p" else f"team:{target_id}"
+            topic_id = resolve_topic_id("", payload)
+            chat_id = (
+                build_topic_chat_id(sender_id, topic_id)
+                if session_type == "p2p" and topic_id is not None
+                else f"user:{sender_id}" if session_type == "p2p" else f"team:{target_id}"
+            )
         if self._multi_instance_enabled() and account_id:
             chat_id = self._with_account_prefix(account_id, chat_id)
+        conversation_name = append_topic_to_conversation_name(
+            payload.get("conversation_name"),
+            payload.get("topic_name"),
+        )
         source = MessageSource(
             platform=self.platform.value,
             chat_id=chat_id,
             chat_type=chat_type,
             user_id=sender_id,
             user_name=payload.get("sender_name"),
-            chat_name=payload.get("conversation_name"),
+            chat_name=conversation_name,
         )
         message_type = self._to_message_type(str(payload.get("message_type") or "text"))
         media_urls, media_types = await self._load_media_attachments(payload, message_type)
         return MessageEvent(
             message_id=str(payload.get("message_id") or payload.get("client_message_id") or ""),
             message_type=message_type.value,
-            text=str(payload.get("text") or ""),
+            text=qchat_context_text(
+                payload.get("text"),
+                conversation_name,
+                payload.get("channel_topic"),
+            ) if session_type == "qchat" else str(payload.get("text") or ""),
             source=source,
             raw={
                 **payload,
@@ -538,13 +568,21 @@ class NimAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="no NIM instance is connected for target")
         session_type = self._infer_session_type(routed_chat_id, metadata)
         if session_type == "qchat":
-            return SendResult(success=False, error="qchat media is not supported")
+            return await self.send(
+                chat_id=chat_id,
+                text=qchat_media_fallback_text(caption, file_path),
+                metadata={
+                    **(metadata or {}),
+                    **({"reply_to": reply_to} if reply_to else {}),
+                },
+            )
         result = await runtime.bridge.send_media(
             chat_id=routed_chat_id,
             file_path=str(Path(file_path)),
             media_kind=media_kind,
             session_type=session_type,
             reply_to=reply_to or (metadata or {}).get("reply_to"),
+            topic_id=resolve_topic_id(routed_chat_id, metadata),
         )
         media_result = SendResult(
             success=True,

@@ -1,5 +1,19 @@
 const QCHAT_PREFIXES = ["nim:qchat:", "qchat:"];
 
+export function registerQChatPassiveListeners(qchatMsg, { onMessage, onSystemNotification }) {
+  if (typeof qchatMsg?.on !== "function") {
+    throw new Error("qchat event API is unavailable");
+  }
+  qchatMsg.on("message", onMessage);
+  qchatMsg.on("systemNotification", onSystemNotification);
+  return {
+    stop() {
+      qchatMsg.off?.("message", onMessage);
+      qchatMsg.off?.("systemNotification", onSystemNotification);
+    },
+  };
+}
+
 export function normalizeQChatTarget(chatId) {
   const raw = String(chatId ?? "").trim();
   if (!raw) {
@@ -141,7 +155,7 @@ export function normalizeQChatMessage(message, botAccount) {
 
   return {
     message_id: String(msg.msgIdServer ?? msg.msg_server_id ?? `${Date.now()}`),
-    client_message_id: String(msg.msg_server_id ?? msg.msgIdServer ?? ""),
+    client_message_id: String(msg.msgIdClient ?? msg.msg_client_id ?? ""),
     session_type: "qchat",
     sender_id: senderAccid,
     sender_name: msg.fromNick ?? msg.from_nick ?? null,
@@ -216,6 +230,58 @@ export async function enrichQChatMessageWithChannelInfo(payload, resolveChannelI
     conversation_name: payload.conversation_name ?? channelInfo.name,
     channel_topic: payload.channel_topic ?? channelInfo.topic,
     channel_info: channelInfo,
+  };
+}
+
+export class QChatReplyCache {
+  constructor(limit = 500) {
+    this.limit = Math.max(1, Number(limit) || 500);
+    this.entries = new Map();
+  }
+
+  add(message) {
+    const raw = message?.message ?? message;
+    const keys = [raw?.msgIdServer, raw?.msg_server_id, raw?.msgIdClient, raw?.msg_client_id]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean);
+    for (const key of keys) {
+      this.entries.delete(key);
+      this.entries.set(key, raw);
+    }
+    while (this.entries.size > this.limit) {
+      this.entries.delete(this.entries.keys().next().value);
+    }
+  }
+
+  get(messageId) {
+    const key = String(messageId ?? "").trim();
+    return key ? this.entries.get(key) ?? null : null;
+  }
+
+  clear() {
+    this.entries.clear();
+  }
+}
+
+export async function sendQChatText({ qchatMsg, target, text, originalMessage = null }) {
+  const payload = {
+    serverId: target.serverId,
+    channelId: target.channelId,
+    type: "text",
+    body: String(text ?? ""),
+  };
+  if (originalMessage && typeof qchatMsg?.replyMessage === "function") {
+    return {
+      mode: "reply",
+      response: await qchatMsg.replyMessage({ ...payload, replyMessage: originalMessage }),
+    };
+  }
+  if (typeof qchatMsg?.sendMessage !== "function") {
+    throw new Error("qchat sendMessage is unavailable");
+  }
+  return {
+    mode: originalMessage ? "reply_fallback" : "send",
+    response: await qchatMsg.sendMessage(payload),
   };
 }
 

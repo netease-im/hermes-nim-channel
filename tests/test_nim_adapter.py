@@ -34,12 +34,22 @@ class FakeBridge:
     async def health(self) -> dict[str, str]:
         return {"status": "ok"}
 
-    async def send_text(self, *, chat_id: str, text: str, session_type: str, reply_to=None) -> dict[str, str]:
+    async def send_text(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        session_type: str,
+        reply_to=None,
+        topic_id=None,
+    ) -> dict[str, str]:
         self.sent.append(
             {
                 "chat_id": chat_id,
                 "text": text,
                 "session_type": session_type,
+                "reply_to": reply_to,
+                "topic_id": topic_id,
             }
         )
         return {"message_id": "msg-1"}
@@ -51,12 +61,14 @@ class FakeBridge:
         text: str,
         session_type: str,
         reply_to=None,
+        topic_id=None,
     ) -> dict[str, str]:
         self.qchat_sent.append(
             {
                 "chat_id": chat_id,
                 "text": text,
                 "session_type": session_type,
+                "reply_to": reply_to,
             }
         )
         return {"message_id": "qchat-1"}
@@ -69,6 +81,7 @@ class FakeBridge:
         media_kind: str,
         session_type: str,
         reply_to=None,
+        topic_id=None,
     ) -> dict[str, str]:
         self.media_sent.append(
             {
@@ -77,6 +90,7 @@ class FakeBridge:
                 "media_kind": media_kind,
                 "session_type": session_type,
                 "reply_to": reply_to,
+                "topic_id": topic_id,
             }
         )
         return {"message_id": "media-1"}
@@ -90,6 +104,8 @@ class FakeBridge:
         chunk_index: int = 0,
         is_complete: bool = True,
         reply_to=None,
+        stream_id=None,
+        topic_id=None,
     ) -> dict[str, str]:
         self.stream_sent.append(
             {
@@ -99,6 +115,8 @@ class FakeBridge:
                 "chunk_index": chunk_index,
                 "is_complete": is_complete,
                 "reply_to": reply_to,
+                "stream_id": stream_id,
+                "topic_id": topic_id,
             }
         )
         return {"message_id": "stream-1"}
@@ -701,7 +719,7 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual("client-1", bridge.media_sent[0]["reply_to"])
 
-    async def test_qchat_media_is_rejected_without_bridge_send(self) -> None:
+    async def test_qchat_media_falls_back_to_one_text_message(self) -> None:
         bridge = FakeBridge()
         adapter = NimAdapter(
             PlatformConfig(extra={"nim_token": "app|bot|secret"}),
@@ -709,9 +727,9 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         await adapter.connect()
         result = await adapter.send_image_file("qchat:server-a:channel-b", "/tmp/test.png")
-        self.assertFalse(result.success)
-        self.assertEqual("qchat media is not supported", result.error)
+        self.assertTrue(result.success)
         self.assertEqual([], bridge.media_sent)
+        self.assertEqual("/tmp/test.png", bridge.qchat_sent[0]["text"])
 
     async def test_media_caption_sends_followup_text(self) -> None:
         bridge = FakeBridge()
@@ -842,6 +860,108 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, len(accepted))
         self.assertEqual("qchat:server-a:channel-a", accepted[0].source.chat_id)
+
+    async def test_inbound_qchat_injects_channel_context_once(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret", "qchat_policy": "open"}),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "qchat",
+                    "sender_id": "alice",
+                    "server_id": "server-a",
+                    "channel_id": "channel-a",
+                    "target_id": "server-a:channel-a",
+                    "conversation_name": "General",
+                    "channel_topic": "Daily work",
+                    "text": "hello",
+                    "message_id": "qchat-context",
+                    "message_type": "text",
+                    "mentioned": True,
+                },
+            }
+        )
+        self.assertEqual("[QChat channel=General; topic=Daily work]\nhello", accepted[0].text)
+
+    async def test_same_sender_topics_use_distinct_chat_ids_and_titles(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret", "p2p_policy": "open"}),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+        for topic_id, topic_name in ((1, "Release"), (2, "Support")):
+            await bridge.event_handler(
+                {
+                    "type": "event",
+                    "event": "message",
+                    "payload": {
+                        "session_type": "p2p",
+                        "sender_id": "alice",
+                        "target_id": "bot",
+                        "conversation_name": "云信·单聊·Alice",
+                        "topic_refer": {
+                            "topicId": topic_id,
+                            "conversationId": "0|1|alice",
+                            "createTime": 100,
+                        },
+                        "topic_name": topic_name,
+                        "text": "hello",
+                        "message_id": f"topic-{topic_id}",
+                        "message_type": "text",
+                    },
+                }
+            )
+        self.assertEqual(["user:alice:topic:1", "user:alice:topic:2"], [event.source.chat_id for event in accepted])
+        self.assertEqual("云信·单聊·Alice · Release", accepted[0].source.chat_name)
+        self.assertEqual("云信·单聊·Alice · Support", accepted[1].source.chat_name)
+
+    async def test_topic_target_forwards_topic_to_text_media_and_stream(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(PlatformConfig(extra={"nim_token": "app|bot|secret"}), bridge=bridge)
+        await adapter.connect()
+
+        await adapter.send("user:alice:topic:42", "text")
+        await adapter.send_image_file("user:alice:topic:42", "/tmp/test.png")
+        await adapter.send(
+            "user:alice:topic:42",
+            "chunk",
+            metadata={"stream": {"stream_id": "answer-42", "is_complete": False}},
+        )
+
+        self.assertEqual(42, bridge.sent[0]["topic_id"])
+        self.assertEqual(42, bridge.media_sent[0]["topic_id"])
+        self.assertEqual(42, bridge.stream_sent[0]["topic_id"])
+        self.assertEqual("answer-42", bridge.stream_sent[0]["stream_id"])
+
+    async def test_qchat_media_fallback_keeps_caption_and_reply(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret", "qchat_policy": "open"}),
+            bridge=bridge,
+        )
+        await adapter.connect()
+        result = await adapter.send_document(
+            "qchat:server-a:channel-a",
+            "/tmp/report.pdf",
+            caption="report",
+            reply_to="source-1",
+        )
+        self.assertTrue(result.success)
+        self.assertEqual("report\n/tmp/report.pdf", bridge.qchat_sent[0]["text"])
+        self.assertEqual("source-1", bridge.qchat_sent[0]["reply_to"])
 
     def test_inbound_attachment_preserves_scene_name(self) -> None:
         attachment = parse_inbound_attachment(

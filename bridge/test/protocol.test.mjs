@@ -5,12 +5,16 @@ import {
   buildNimConstructorOptions,
   addBatchMetadata,
   addProcessingQuickComment,
+  applyBridgeConnectionStatus,
+  clearBridgeRuntimeState,
+  canFallbackMissingReply,
   isP2pApplicantAllowed,
   collectReadReceiptBatches,
   createStreamChunkParams,
   deriveMessageRefer,
   InboundBatchEmitter,
   inboundBatchKey,
+  isBridgeRuntimeConnected,
   normalizeTarget,
   normalizeConnectionStatus,
   normalizeSendResult,
@@ -18,6 +22,8 @@ import {
   normalizeTopicRefer,
   parseBridgeConfig,
   ReplyMessageCache,
+  StreamSessionRegistry,
+  TopicReplyContextRegistry,
   resolveQuickCommentIndex,
   resolveTopicInfo,
   resolveTopicReplyContext,
@@ -25,7 +31,9 @@ import {
   sendEditReplacementMessage,
   sendMediaMaybeTopicReply,
   sendStreamTextMessage,
+  sendStatefulStreamChunk,
   sendTextReplyMessage,
+  sendTopicStreamChunk,
   shouldDispatchInboundMessage,
   splitMessageIntoChunks,
   stripLeadingMentionPrefix,
@@ -345,6 +353,205 @@ test("target normalization preserves team routing", () => {
     id: "alice",
     sessionType: "p2p",
   });
+});
+
+test("target normalization extracts a p2p Topic suffix", () => {
+  assert.deepEqual(normalizeTarget("user:alice:topic:42"), {
+    id: "alice",
+    sessionType: "p2p",
+    topicId: 42,
+  });
+});
+
+test("inbound batch keys isolate Topics from the same sender", () => {
+  assert.equal(
+    inboundBatchKey({ session_type: "p2p", sender_id: "alice", topic_refer: { topicId: 1 } }),
+    "p2p:alice:topic:1",
+  );
+  assert.equal(
+    inboundBatchKey({ session_type: "p2p", sender_id: "alice", topic_refer: { topicId: 2 } }),
+    "p2p:alice:topic:2",
+  );
+});
+
+test("topic context registry resolves aliases and latest Topic with TTL cleanup", () => {
+  let now = 1000;
+  const registry = new TopicReplyContextRegistry({ ttlMs: 1000, now: () => now });
+  const originalMessage = {
+    messageServerId: "server-1",
+    messageClientId: "client-1",
+    topicRefer: { topicId: 42, conversationId: "0|1|alice", createTime: 100 },
+  };
+  registry.add({
+    accountId: "bot",
+    targetId: "alice",
+    originalMessage,
+  });
+  assert.equal(registry.resolve({ accountId: "bot", targetId: "alice", replyTo: "client-1" })?.originalMessage, originalMessage);
+  assert.equal(registry.resolve({ accountId: "bot", targetId: "alice", topicId: 42 })?.originalMessage, originalMessage);
+  assert.equal(registry.resolve({ accountId: "bot", targetId: "bob", topicId: 42 }), null);
+  now = 2001;
+  assert.equal(registry.resolve({ accountId: "bot", targetId: "alice", topicId: 42 }), null);
+  assert.equal(registry.size, 0);
+});
+
+test("stateful stream chunks reuse SDK output and clear on finish", async () => {
+  const registry = new StreamSessionRegistry({ ttlMs: 5000 });
+  const created = [];
+  const sentMessages = [];
+  const messageCreator = {
+    createTextMessage(text) {
+      const message = { initialText: text, sequence: created.length + 1 };
+      created.push(message);
+      return message;
+    },
+  };
+  const messageService = {
+    async sendStreamMessage(message, _conversationId, _options, params) {
+      sentMessages.push({ message, params });
+      return { messageServerId: `server-${sentMessages.length}`, sequence: `base-${sentMessages.length}` };
+    },
+  };
+  const key = registry.key({ streamId: "stream-1", accountId: "bot", targetId: "alice", sessionType: "p2p" });
+
+  const first = await sendStatefulStreamChunk({
+    registry,
+    key,
+    messageCreator,
+    messageService,
+    text: "first",
+    conversationId: "0|1|alice",
+    options: {},
+    streamChunkParams: createStreamChunkParams({ text: "first", chunkIndex: 0, isComplete: false }),
+    isComplete: false,
+    sendOrdinary: async () => assert.fail("ordinary fallback should not run"),
+  });
+  const firstSdkResult = first.result;
+  await sendStatefulStreamChunk({
+    registry,
+    key,
+    messageCreator,
+    messageService,
+    text: "second",
+    conversationId: "0|1|alice",
+    options: {},
+    streamChunkParams: createStreamChunkParams({ text: "second", chunkIndex: 1, isComplete: true }),
+    isComplete: true,
+    sendOrdinary: async () => assert.fail("ordinary fallback should not run"),
+  });
+
+  assert.equal(created.length, 1);
+  assert.equal(sentMessages[1].message, firstSdkResult);
+  assert.equal(registry.size, 0);
+});
+
+test("stateful stream state clears after failure and idle expiry", async () => {
+  let now = 1000;
+  const registry = new StreamSessionRegistry({ ttlMs: 1000, now: () => now });
+  const key = registry.key({ streamId: "stream-2", accountId: "bot", targetId: "alice", sessionType: "p2p" });
+  registry.set(key, { baseMessage: { id: "base" } });
+  now = 2001;
+  assert.equal(registry.size, 0);
+
+  registry.set(key, { baseMessage: { id: "base-2" } });
+  await assert.rejects(() => sendStatefulStreamChunk({
+    registry,
+    key,
+    messageCreator: { createTextMessage: () => ({}) },
+    messageService: { sendStreamMessage: async () => { throw new Error("failed"); } },
+    text: "chunk",
+    conversationId: "0|1|alice",
+    options: {},
+    streamChunkParams: createStreamChunkParams({ text: "chunk", isComplete: false }),
+    isComplete: false,
+    sendOrdinary: async () => ({}),
+  }), /failed/);
+  assert.equal(registry.size, 0);
+});
+
+test("stream and Topic registries actively clear timers and disconnect state", () => {
+  const callbacks = [];
+  const cleared = [];
+  const setTimer = (callback) => {
+    const handle = { callback, unref() {} };
+    callbacks.push(handle);
+    return handle;
+  };
+  const clearTimer = (handle) => cleared.push(handle);
+  const streams = new StreamSessionRegistry({ setTimer, clearTimer });
+  const streamKey = streams.key({ streamId: "active", accountId: "bot", targetId: "alice", sessionType: "p2p" });
+  streams.set(streamKey, { baseMessage: {} });
+  callbacks[0].callback();
+  assert.equal(streams.size, 0);
+
+  const topics = new TopicReplyContextRegistry({ setTimer, clearTimer });
+  topics.add({
+    accountId: "bot",
+    targetId: "alice",
+    originalMessage: {
+      messageServerId: "server-active",
+      topicRefer: { topicId: 7, conversationId: "0|1|alice", createTime: 1 },
+    },
+  });
+  assert.equal(topics.size, 1);
+  topics.clear();
+  assert.equal(topics.size, 0);
+  assert.ok(cleared.length >= 2);
+});
+
+test("bridge connection state rejects connecting and clears transient SDK state on disconnect", () => {
+  const cleared = [];
+  const runtime = {
+    connectionStatus: "connecting",
+    streamSessions: { clear: () => cleared.push("stream") },
+    topicContexts: { clear: () => cleared.push("topic") },
+    qchatReplyCache: { clear: () => cleared.push("qchat") },
+  };
+  assert.equal(isBridgeRuntimeConnected(runtime), false);
+  applyBridgeConnectionStatus(runtime, { status: "connected", reason: "login" });
+  assert.equal(isBridgeRuntimeConnected(runtime), true);
+  assert.deepEqual(cleared, []);
+  applyBridgeConnectionStatus(runtime, { status: "disconnected", reason: "network" });
+  assert.equal(isBridgeRuntimeConnected(runtime), false);
+  assert.deepEqual(cleared, ["stream", "topic", "qchat"]);
+  clearBridgeRuntimeState(runtime);
+  assert.equal(cleared.length, 6);
+});
+
+test("only Topic reply misses are allowed to degrade to ordinary sends", () => {
+  assert.equal(canFallbackMissingReply({ replyTo: "message-1", topicId: null }), false);
+  assert.equal(canFallbackMissingReply({ replyTo: "message-1", topicId: 42 }), true);
+  assert.equal(canFallbackMissingReply({ replyTo: null, topicId: null }), true);
+});
+
+test("Topic stream chunks use TopicService instead of Thread stream APIs", async () => {
+  const calls = [];
+  const originalMessage = {
+    topicRefer: { topicId: 42, conversationId: "0|1|alice", createTime: 100 },
+  };
+  const result = await sendTopicStreamChunk({
+    nim: {
+      V2NIMMessageService: {
+        async replyStreamMessage() {
+          assert.fail("Thread stream API must not be used for Topic chunks");
+        },
+      },
+      V2NIMTopicService: {
+        async replyTopicMessage(message, original, topic) {
+          calls.push({ message, original, topic });
+          return { message: { messageServerId: "topic-stream-1", messageClientId: "client-1" } };
+        },
+      },
+    },
+    messageCreator: { createTextMessage: (text) => ({ text }) },
+    text: "chunk",
+    originalMessage,
+    options: {},
+  });
+  assert.deepEqual(result, { message_id: "topic-stream-1", client_message_id: "client-1" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].original, originalMessage);
+  assert.deepEqual(calls[0].topic, originalMessage.topicRefer);
 });
 
 test("media kind normalization accepts supported kinds", () => {

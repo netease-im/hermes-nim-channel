@@ -10,6 +10,9 @@ import {
   isQChatTargetAllowed,
   normalizeQChatMessage,
   normalizeQChatTarget,
+  QChatReplyCache,
+  registerQChatPassiveListeners,
+  sendQChatText,
 } from "../src/qchat.mjs";
 
 test("bridge config parses qchat policy controls", () => {
@@ -160,4 +163,61 @@ test("qchat allowlist server ids are derived from allowFrom entries", () => {
     deriveQChatServerIds(["server-a|channel-b", "server-a|channel-c", "server-b"]),
     ["server-a", "server-b"],
   );
+});
+
+test("qchat reply cache indexes server and client ids and stays bounded", () => {
+  const cache = new QChatReplyCache(2);
+  const first = { msgIdServer: "server-1", msgIdClient: "client-1" };
+  const second = { msgIdServer: "server-2" };
+  cache.add(first);
+  cache.add(second);
+  assert.equal(cache.get("server-1"), null);
+  assert.equal(cache.get("client-1"), first);
+  assert.equal(cache.get("server-2"), second);
+});
+
+test("qchat sender uses native reply context and ordinary fallback", async () => {
+  const calls = [];
+  const qchatMsg = {
+    async replyMessage(params) {
+      calls.push(["reply", params]);
+      return { message: { msgIdServer: "reply-1" } };
+    },
+    async sendMessage(params) {
+      calls.push(["send", params]);
+      return { message: { msgIdServer: "send-1" } };
+    },
+  };
+  const target = { serverId: "server-a", channelId: "channel-b" };
+  const originalMessage = { msgIdServer: "source-1" };
+  const replied = await sendQChatText({ qchatMsg, target, text: "hello", originalMessage });
+  const fallback = await sendQChatText({ qchatMsg, target, text: "fallback" });
+  assert.equal(replied.mode, "reply");
+  assert.equal(calls[0][1].replyMessage, originalMessage);
+  assert.equal(fallback.mode, "send");
+  assert.equal(calls[1][1].body, "fallback");
+});
+
+test("qchat passive listeners register immediately and detach together", () => {
+  const calls = [];
+  const qchatMsg = {
+    on(event, handler) {
+      calls.push(["on", event, handler]);
+    },
+    off(event, handler) {
+      calls.push(["off", event, handler]);
+    },
+  };
+  const onMessage = () => {};
+  const onSystemNotification = () => {};
+  const runtime = registerQChatPassiveListeners(qchatMsg, { onMessage, onSystemNotification });
+  assert.deepEqual(calls.slice(0, 2).map((call) => call.slice(0, 2)), [
+    ["on", "message"],
+    ["on", "systemNotification"],
+  ]);
+  runtime.stop();
+  assert.deepEqual(calls.slice(2).map((call) => call.slice(0, 2)), [
+    ["off", "message"],
+    ["off", "systemNotification"],
+  ]);
 });

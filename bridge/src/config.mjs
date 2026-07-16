@@ -181,8 +181,17 @@ export function normalizeTarget(chatId, fallbackSessionType = "p2p") {
   }
 
   if (raw.startsWith("user:") || raw.startsWith("nim:")) {
+    const value = raw.slice(raw.indexOf(":") + 1);
+    const topicMatch = value.match(/^(.*):topic:([^:]+)$/);
+    if (topicMatch && topicMatch[1] && Number.isFinite(Number(topicMatch[2])) && Number(topicMatch[2]) > 0) {
+      return {
+        id: topicMatch[1],
+        sessionType: "p2p",
+        topicId: Number(topicMatch[2]),
+      };
+    }
     return {
-      id: raw.slice(raw.indexOf(":") + 1),
+      id: value,
       sessionType: "p2p",
     };
   }
@@ -308,6 +317,227 @@ export class ReplyMessageCache {
     }
     return this.refers.get(key) ?? null;
   }
+}
+
+export class StreamSessionRegistry {
+  constructor({
+    limit = 100,
+    ttlMs = 5 * 60 * 1000,
+    now = () => Date.now(),
+    setTimer = setTimeout,
+    clearTimer = clearTimeout,
+  } = {}) {
+    this.limit = Math.max(1, Number(limit) || 100);
+    this.ttlMs = Math.max(1000, Number(ttlMs) || 5 * 60 * 1000);
+    this.now = now;
+    this.setTimer = setTimer;
+    this.clearTimer = clearTimer;
+    this.entries = new Map();
+  }
+
+  key({ streamId, accountId, targetId, sessionType, replyTo = "", topicId = "" }) {
+    const explicitStreamId = String(streamId ?? "").trim();
+    const compatibilityId = [sessionType, targetId, topicId, replyTo].map((value) => String(value ?? "")).join(":");
+    return [accountId, explicitStreamId || compatibilityId, sessionType, targetId, topicId, replyTo]
+      .map((value) => String(value ?? ""))
+      .join("|");
+  }
+
+  cleanup(nowMs = this.now()) {
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAt <= nowMs) {
+        this.delete(key);
+      }
+    }
+  }
+
+  get(key) {
+    this.cleanup();
+    const entry = this.entries.get(key) ?? null;
+    if (entry) {
+      this.set(key, entry);
+    }
+    return entry;
+  }
+
+  set(key, value) {
+    this.cleanup();
+    this.delete(key);
+    const entry = {
+      ...value,
+      expiresAt: this.now() + this.ttlMs,
+      timeout: null,
+    };
+    entry.timeout = this.setTimer(() => this.delete(key), this.ttlMs);
+    entry.timeout?.unref?.();
+    this.entries.set(key, entry);
+    while (this.entries.size > this.limit) {
+      this.delete(this.entries.keys().next().value);
+    }
+  }
+
+  delete(key) {
+    const entry = this.entries.get(key);
+    if (entry?.timeout) {
+      this.clearTimer(entry.timeout);
+    }
+    return this.entries.delete(key);
+  }
+
+  clear() {
+    for (const key of [...this.entries.keys()]) {
+      this.delete(key);
+    }
+  }
+
+  get size() {
+    this.cleanup();
+    return this.entries.size;
+  }
+}
+
+export class TopicReplyContextRegistry {
+  constructor({
+    limit = 500,
+    ttlMs = 30 * 60 * 1000,
+    now = () => Date.now(),
+    setTimer = setTimeout,
+    clearTimer = clearTimeout,
+  } = {}) {
+    this.limit = Math.max(1, Number(limit) || 500);
+    this.ttlMs = Math.max(1000, Number(ttlMs) || 30 * 60 * 1000);
+    this.now = now;
+    this.setTimer = setTimer;
+    this.clearTimer = clearTimer;
+    this.entries = new Map();
+    this.aliases = new Map();
+    this.latest = new Map();
+    this.nextId = 0;
+  }
+
+  add({ accountId, targetId, topic, originalMessage }) {
+    const normalizedTopic = normalizeTopicRefer(topic ?? originalMessage?.topicRefer);
+    const account = String(accountId ?? "").trim();
+    const target = String(targetId ?? "").trim();
+    const aliases = [originalMessage?.messageServerId, originalMessage?.messageClientId]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean);
+    if (!account || !target || !normalizedTopic || !originalMessage || aliases.length === 0) {
+      return null;
+    }
+
+    this.cleanup();
+    const id = String(++this.nextId);
+    const context = {
+      accountId: account,
+      targetId: target,
+      topicId: normalizedTopic.topicId,
+      topic: normalizedTopic,
+      originalMessage,
+      aliases: [...new Set(aliases)],
+      expiresAt: this.now() + this.ttlMs,
+      timeout: null,
+    };
+    context.timeout = this.setTimer(() => this.remove(id), this.ttlMs);
+    context.timeout?.unref?.();
+    this.entries.set(id, context);
+    for (const alias of context.aliases) {
+      this.aliases.set(`${account}|${target}|${alias}`, id);
+    }
+    this.latest.set(`${account}|${target}|${context.topicId}`, id);
+    while (this.entries.size > this.limit) {
+      this.remove(this.entries.keys().next().value);
+    }
+    return context;
+  }
+
+  resolve({ accountId, targetId, topicId = null, replyTo = null }) {
+    this.cleanup();
+    const account = String(accountId ?? "").trim();
+    const target = String(targetId ?? "").trim();
+    const reply = String(replyTo ?? "").trim();
+    const normalizedTopicId = Number(topicId);
+    let id = null;
+    if (reply) {
+      id = this.aliases.get(`${account}|${target}|${reply}`) ?? null;
+    }
+    if (!id && Number.isFinite(normalizedTopicId) && normalizedTopicId > 0) {
+      id = this.latest.get(`${account}|${target}|${normalizedTopicId}`) ?? null;
+    }
+    const context = id ? this.entries.get(id) ?? null : null;
+    if (context && Number.isFinite(normalizedTopicId) && normalizedTopicId > 0 && context.topicId !== normalizedTopicId) {
+      return null;
+    }
+    return context;
+  }
+
+  cleanup(nowMs = this.now()) {
+    for (const [id, context] of this.entries) {
+      if (context.expiresAt <= nowMs) {
+        this.remove(id);
+      }
+    }
+  }
+
+  remove(id) {
+    const context = this.entries.get(id);
+    if (!context) {
+      return false;
+    }
+    this.entries.delete(id);
+    if (context.timeout) {
+      this.clearTimer(context.timeout);
+    }
+    for (const alias of context.aliases) {
+      const key = `${context.accountId}|${context.targetId}|${alias}`;
+      if (this.aliases.get(key) === id) {
+        this.aliases.delete(key);
+      }
+    }
+    const topicKey = `${context.accountId}|${context.targetId}|${context.topicId}`;
+    if (this.latest.get(topicKey) === id) {
+      this.latest.delete(topicKey);
+    }
+    return true;
+  }
+
+  clear() {
+    for (const id of [...this.entries.keys()]) {
+      this.remove(id);
+    }
+  }
+
+  get size() {
+    this.cleanup();
+    return this.entries.size;
+  }
+}
+
+export function clearBridgeRuntimeState(runtime) {
+  runtime?.streamSessions?.clear();
+  runtime?.topicContexts?.clear();
+  runtime?.qchatReplyCache?.clear();
+}
+
+export function applyBridgeConnectionStatus(runtime, payload) {
+  if (!runtime) {
+    return;
+  }
+  runtime.connectionStatus = payload?.status ?? "unknown";
+  runtime.connectionReason = payload?.reason ?? "";
+  if (["logout", "kickout", "disconnected"].includes(runtime.connectionStatus)) {
+    clearBridgeRuntimeState(runtime);
+  }
+}
+
+export function isBridgeRuntimeConnected(runtime) {
+  return Boolean(runtime) && runtime.connectionStatus === "connected";
+}
+
+export function canFallbackMissingReply({ replyTo = null, topicId = null } = {}) {
+  const hasReplyTarget = Boolean(String(replyTo ?? "").trim());
+  const normalizedTopicId = Number(topicId);
+  return !hasReplyTarget || (Number.isFinite(normalizedTopicId) && normalizedTopicId > 0);
 }
 
 export function splitMessageIntoChunks(text, maxLength = 4000) {
@@ -579,7 +809,9 @@ export function addBatchMetadata(payload, { batchId, batchKey, batchIndex, batch
 export function inboundBatchKey(payload) {
   const sessionType = String(payload?.session_type ?? "p2p");
   if (sessionType === "p2p") {
-    return `p2p:${String(payload?.sender_id ?? payload?.target_id ?? "unknown")}`;
+    const topicId = Number(payload?.topic_refer?.topicId ?? payload?.topic_info?.topicId);
+    const topicSuffix = Number.isFinite(topicId) && topicId > 0 ? `:topic:${topicId}` : "";
+    return `p2p:${String(payload?.sender_id ?? payload?.target_id ?? "unknown")}${topicSuffix}`;
   }
   if (sessionType === "qchat") {
     return `qchat:${String(payload?.target_id ?? "unknown")}`;
@@ -702,6 +934,24 @@ export async function sendTextReplyMessage({ nim, messageService, message, origi
   return messageService.replyMessage(message, originalMessage, options);
 }
 
+export async function sendTopicStreamChunk({ nim, messageCreator, text, originalMessage, options }) {
+  const message = messageCreator?.createTextMessage?.(String(text ?? ""));
+  if (!message) {
+    throw new Error("failed to create Topic stream chunk message");
+  }
+  const topicReplyContext = resolveTopicReplyContext(nim, originalMessage);
+  if (!topicReplyContext) {
+    throw new Error("Topic reply API is unavailable");
+  }
+  const result = await topicReplyContext.topicService.replyTopicMessage(
+    message,
+    originalMessage,
+    topicReplyContext.topic,
+    options,
+  );
+  return normalizeSendResult(result);
+}
+
 export async function sendMediaMaybeTopicReply({ nim, message, originalMessage, options, sendOrdinary }) {
   const topicReplyContext = resolveTopicReplyContext(nim, originalMessage);
   if (topicReplyContext) {
@@ -757,6 +1007,53 @@ export async function sendStreamTextMessage({ messageService, message, conversat
     mode: "fallback",
     result: await sendOrdinary(),
   };
+}
+
+export async function sendStatefulStreamChunk({
+  registry,
+  key,
+  messageCreator,
+  messageService,
+  text,
+  conversationId,
+  originalMessage = null,
+  options,
+  streamChunkParams,
+  isComplete,
+  sendOrdinary,
+}) {
+  const existing = registry.get(key);
+  const resolvedOriginalMessage = existing?.originalMessage ?? originalMessage;
+  const message = existing?.baseMessage ?? messageCreator?.createTextMessage?.(String(text ?? ""));
+  if (!message) {
+    registry.delete(key);
+    throw new Error("failed to create stream message");
+  }
+
+  try {
+    const sent = await sendStreamTextMessage({
+      messageService,
+      message,
+      conversationId,
+      originalMessage: resolvedOriginalMessage,
+      options,
+      streamChunkParams,
+      sendOrdinary: () => sendOrdinary(message),
+    });
+    if (sent.mode === "fallback" || isComplete) {
+      registry.delete(key);
+    } else {
+      registry.set(key, {
+        baseMessage: sent.result?.baseMessage ?? sent.result?.message ?? sent.result,
+        originalMessage: resolvedOriginalMessage,
+        nextChunkIndex: streamChunkParams.index + 1,
+      });
+    }
+    return { ...sent, reusedBaseMessage: Boolean(existing) };
+  } catch (error) {
+    registry.delete(key);
+    throw error;
+  }
 }
 
 export function normalizeSendResult(result) {
@@ -1013,13 +1310,15 @@ export async function toInboundMessage(message, botAccount, nim = null) {
     parsed.sessionType === "team" || parsed.sessionType === "superTeam"
       ? await resolveTeamName(nim, targetId, parsed.sessionType)
       : senderName;
-  const conversationName = rawConversationName
-    ? buildConversationLabel(parsed.sessionType === "p2p" ? "p2p" : "team", rawConversationName)
-    : null;
-
   const topicRefer = normalizeTopicRefer(message?.topicRefer);
   const topicInfo = topicRefer ? await resolveTopicInfo(nim, topicRefer) : null;
   const topicName = String(topicInfo?.topicName ?? "").trim() || null;
+  const displayConversationName = rawConversationName && topicName
+    ? `${rawConversationName} · ${topicName}`
+    : rawConversationName;
+  const conversationName = displayConversationName
+    ? buildConversationLabel(parsed.sessionType === "p2p" ? "p2p" : "team", displayConversationName)
+    : null;
   const replyContext = await resolveInboundReplyContext(message, botAccount, nim);
   if (!replyContext) {
     const replyDiagnostics = summarizeReplyLikeFields(message);

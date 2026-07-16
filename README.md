@@ -14,11 +14,12 @@
 - 群 @ 消息会移除开头的 `@xxx` 前缀，避免把 @ 文本当成用户内容。
 - 只处理在线消息：跳过漫游、离线、历史、同步消息，避免 gateway 重启后重复回复旧消息。
 - 对在线 P2P 和群消息发送已读回执，具体是否成功取决于服务端和 SDK 权限。
-- 支持文本、长文本分片、流式回退、编辑替换、回复消息发送。
-- 当 NIM topic 元数据可用时，支持 topic 文本/媒体回复。
+- 支持文本、长文本分片、有状态流式消息、编辑替换、回复消息发送。
+- 当 NIM Topic 元数据可用时，按 Topic 隔离 Hermes 会话，并支持文本、媒体和分块流式延迟路由。
 - 支持 P2P/群图片、文件、音频、视频出站发送。
 - 支持入站媒体下载；SDK 支持时可做音频转文本。
-- 支持用户、群、QChat 名称解析，用于 Hermes WebUI 会话标题。
+- 支持用户、群、QChat 名称解析；Topic 名称进入会话标题，QChat 频道名称和主题进入 Agent 上下文。
+- QChat 入站消息支持原生引用回复；QChat 媒体出站降级为包含 caption 和路径/URL 的单条文本。
 - 支持按 P2P 策略自动通过好友申请。
 - 支持私有化 LBS/link/NOS 配置。
 - 支持可选入站消息批处理元数据和临时快捷评论处理标记。
@@ -26,7 +27,7 @@
 ## 已知限制
 
 - 入站引用消息展示依赖 NIM SDK 是否提供 `threadReply` 或等价回复元数据。当前实测普通客户端引用回复消息未携带 `threadReply/reply/quote/refer` 字段，因此 Hermes WebUI 无法展示被引用源消息。
-- QChat 媒体出站暂不支持，会返回明确的 unsupported 结果。
+- QChat 暂不创建原生图片、文件、音频或视频消息，而是发送包含 caption 和路径/URL 的文本回退消息。
 - 群已读回执可能因服务端或应用权限返回 `forbidden`，插件会记录日志但不阻断消息处理。
 
 ## 安装
@@ -100,6 +101,7 @@ export NIM_INSTANCES='[
 
 ```text
 acct:<url-encoded-account-id>:user:<accid>
+acct:<url-encoded-account-id>:user:<accid>:topic:<topicId>
 acct:<url-encoded-account-id>:team:<teamId>
 acct:<url-encoded-account-id>:qchat:<serverId>:<channelId>
 ```
@@ -157,6 +159,7 @@ export NIM_AUTO_INSTALL_BRIDGE='false'
 ## Chat ID 格式
 
 - P2P：`user:<accid>`。
+- P2P Topic：`user:<accid>:topic:<topicId>`。
 - 群/超大群：`team:<teamId>`。
 - QChat：`qchat:<serverId>:<channelId>`。
 - 多实例：在上述目标前增加 `acct:<url-encoded-account-id>:` 前缀。
@@ -166,9 +169,16 @@ export NIM_AUTO_INSTALL_BRIDGE='false'
 - 只有在线消息（`messageSource === 1`）会进入 Hermes；漫游、离线、历史、同步消息会被跳过。
 - 群/超大群消息需要 @ 或强推机器人后才会进入 Hermes。
 - QChat 消息需要 @ 或 @所有人后才会进入 Hermes。
+- QChat 被动监听在登录前注册，登录成功后再发现圈组并订阅频道，避免登录切换窗口丢消息。
+- QChat 引用回复命中 bridge 原始消息缓存时使用原生 `replyMessage`；缓存未命中时普通发送并返回 fallback 元数据。
+- QChat 入站文本前会注入一次频道名称/主题上下文；媒体出站合并为一条文本消息。
 - 群消息开头的 @ 文本会在进入 Hermes 前剥离。
 - 原始 NIM payload 会保留在事件 metadata 中，便于排障和高级处理。
 - `reply_to` 出站消息会在 bridge 缓存或 message refer 可找到原消息时使用 NIM 回复接口。
+- P2P Topic 按 NIM 账号、对端账号和 Topic ID 隔离会话及入站批次；Topic 上下文在 bridge 中保留 30 分钟，支持不携带 `reply_to` 的延迟发送。
+- 流式发送可在 metadata 的 `stream.stream_id` 中提供稳定 ID；普通 P2P/群中，相同账号、目标、回复目标和 stream ID 的分片复用同一个 SDK base message。未提供时插件按目标上下文派生兼容 ID。
+- 网关连接后会创建权限为 `0600` 的 `~/.hermes/nim-channel.sock`，供 `hermes send --to nim:...` 和独立 cron 复用当前 NIM 登录；网关未运行时会明确失败，不会启动第二个 NIM 客户端。
+- NIM SDK 没有 Topic 原生流接口，因此 Topic 流式内容按参考实现逐块调用 `replyTopicMessage`，保证每个分块仍位于原 Topic，而不会误发为 Thread 流消息。
 
 ## 验证
 
@@ -186,8 +196,8 @@ node --test bridge/test/*.test.mjs
 
 当前基线：
 
-- Python：48 个测试通过。
-- Node：59 个测试通过。
+- Python：55 个测试通过。
+- Node：74 个测试通过。
 
 运行态排查命令：
 
@@ -211,6 +221,9 @@ ps -ef | rg 'gateway run|bridge/index.mjs' | rg -v rg
 - [ ] 入站媒体会生成 `media_urls` 和 `media_types`。
 - [ ] P2P/群出站图片、文件、音频、视频可用。
 - [ ] QChat 文本收发符合配置策略。
+- [ ] QChat 引用回复命中时使用原生回复，媒体发送可收到 caption + 路径/URL 文本。
+- [ ] 同一 P2P 用户的不同 Topic 进入不同 Hermes 会话，延迟回复仍回到原 Topic。
+- [ ] 同一 `stream_id` 的多个分片在完成前复用一条 SDK 流消息。
 - [ ] 多实例配置下，不同账号各自登录，入站会话带 `acct:<url-encoded-account-id>:` 前缀，出站回复回到正确账号。
 - [ ] WebUI 会话标题符合 `云信·单聊·<昵称>` 和 `云信·群聊·<群名>`。
 
@@ -225,6 +238,7 @@ hermes_nim_channel/
   inbound_media.py
   qchat.py
   session_titles.py
+  targets.py
   platforms/
     base.py
     nim.py
@@ -234,6 +248,9 @@ bridge/
   index.mjs
   package.json
   src/
+    config.mjs
+    qchat.mjs
+    qchat-runtime.mjs
   test/
 docs/
 openspec/
