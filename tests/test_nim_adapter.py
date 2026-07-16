@@ -891,6 +891,37 @@ class NimAdapterTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual("[QChat channel=General; topic=Daily work]\nhello", accepted[0].text)
+        self.assertEqual("云信·圈组·General", accepted[0].source.chat_name)
+
+    async def test_inbound_qchat_title_falls_back_to_server_and_channel(self) -> None:
+        bridge = FakeBridge()
+        adapter = NimAdapter(
+            PlatformConfig(extra={"nim_token": "app|bot|secret", "qchat_policy": "open"}),
+            bridge=bridge,
+        )
+        accepted = []
+        adapter.set_message_handler(lambda event: accepted.append(event))
+        await adapter.connect()
+        assert bridge.event_handler is not None
+        await bridge.event_handler(
+            {
+                "type": "event",
+                "event": "message",
+                "payload": {
+                    "session_type": "qchat",
+                    "sender_id": "alice",
+                    "server_id": "server-a",
+                    "channel_id": "channel-a",
+                    "target_id": "server-a:channel-a",
+                    "text": "hello",
+                    "message_id": "qchat-title-fallback",
+                    "message_type": "text",
+                    "mentioned": True,
+                },
+            }
+        )
+        self.assertEqual("云信·圈组·server-a:channel-a", accepted[0].source.chat_name)
+        self.assertEqual("[QChat channel=server-a:channel-a]\nhello", accepted[0].text)
 
     async def test_same_sender_topics_use_distinct_chat_ids_and_titles(self) -> None:
         bridge = FakeBridge()

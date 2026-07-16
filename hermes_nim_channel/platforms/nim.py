@@ -32,8 +32,10 @@ from hermes_nim_channel.platforms.nim_bridge import NodeBridgeProcess
 from hermes_nim_channel.session_titles import schedule_nim_session_title_pin
 from hermes_nim_channel.targets import (
     append_topic_to_conversation_name,
+    build_qchat_conversation_name,
     build_topic_chat_id,
     derive_stream_id,
+    qchat_channel_display_name,
     qchat_context_text,
     qchat_media_fallback_text,
     resolve_topic_id,
@@ -415,10 +417,24 @@ class NimAdapter(BasePlatformAdapter):
             )
         if self._multi_instance_enabled() and account_id:
             chat_id = self._with_account_prefix(account_id, chat_id)
-        conversation_name = append_topic_to_conversation_name(
+        raw_conversation_name = append_topic_to_conversation_name(
             payload.get("conversation_name"),
             payload.get("topic_name"),
         )
+        if session_type == "qchat":
+            channel_display_name = qchat_channel_display_name(
+                raw_conversation_name,
+                server_id,
+                channel_id,
+            )
+            conversation_name = build_qchat_conversation_name(
+                channel_display_name,
+                server_id,
+                channel_id,
+            )
+        else:
+            channel_display_name = raw_conversation_name
+            conversation_name = raw_conversation_name
         source = MessageSource(
             platform=self.platform.value,
             chat_id=chat_id,
@@ -434,7 +450,7 @@ class NimAdapter(BasePlatformAdapter):
             message_type=message_type.value,
             text=qchat_context_text(
                 payload.get("text"),
-                conversation_name,
+                channel_display_name,
                 payload.get("channel_topic"),
             ) if session_type == "qchat" else str(payload.get("text") or ""),
             source=source,

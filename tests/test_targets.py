@@ -4,10 +4,12 @@ import unittest
 
 from hermes_nim_channel.targets import (
     append_topic_to_conversation_name,
+    build_qchat_conversation_name,
     build_topic_chat_id,
     derive_stream_id,
     parse_topic_chat_id,
     qchat_context_text,
+    qchat_channel_display_name,
     qchat_media_fallback_text,
     resolve_topic_id,
 )
@@ -41,6 +43,24 @@ class TargetHelpersTests(unittest.TestCase):
         )
         self.assertEqual("explicit", derive_stream_id("user:alice", None, "explicit"))
         self.assertEqual("caption\n/tmp/image.png", qchat_media_fallback_text("caption", "/tmp/image.png"))
+
+    def test_qchat_conversation_title_matches_openclaw_format(self) -> None:
+        self.assertEqual(
+            "云信·圈组·General",
+            build_qchat_conversation_name("General", "server-a", "channel-a"),
+        )
+        self.assertEqual(
+            "云信·圈组·server-a:channel-a",
+            build_qchat_conversation_name(None, "server-a", "channel-a"),
+        )
+        self.assertEqual(
+            "云信·圈组·General",
+            build_qchat_conversation_name("云信·圈组·General", "server-a", "channel-a"),
+        )
+        self.assertEqual(
+            "General",
+            qchat_channel_display_name("云信·圈组·General", "server-a", "channel-a"),
+        )
 
 
 if __name__ == "__main__":

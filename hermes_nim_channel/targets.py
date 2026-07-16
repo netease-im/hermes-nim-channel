@@ -75,6 +75,27 @@ def append_topic_to_conversation_name(name: Any, topic_name: Any) -> str | None:
     return f"{conversation} · {topic}"
 
 
+QCHAT_CONVERSATION_PREFIX = "云信·圈组·"
+
+
+def qchat_channel_display_name(channel_name: Any, server_id: Any, channel_id: Any) -> str:
+    name = str(channel_name or "").strip()
+    if name.startswith(QCHAT_CONVERSATION_PREFIX):
+        name = name[len(QCHAT_CONVERSATION_PREFIX):].strip()
+    if name:
+        return name
+    server = str(server_id or "").strip()
+    channel = str(channel_id or "").strip()
+    if server and channel:
+        return f"{server}:{channel}"
+    return server or channel or "unknown"
+
+
+def build_qchat_conversation_name(channel_name: Any, server_id: Any, channel_id: Any) -> str:
+    display_name = qchat_channel_display_name(channel_name, server_id, channel_id)
+    return f"{QCHAT_CONVERSATION_PREFIX}{display_name}"
+
+
 def qchat_context_text(text: Any, channel_name: Any, channel_topic: Any) -> str:
     original = str(text or "")
     name = str(channel_name or "").strip()

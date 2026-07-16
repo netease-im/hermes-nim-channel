@@ -27,8 +27,10 @@ from hermes_nim_channel.session_titles import schedule_nim_session_title_pin
 from hermes_nim_channel.standalone import NimStandaloneRelay, standalone_send_via_gateway
 from hermes_nim_channel.targets import (
     append_topic_to_conversation_name,
+    build_qchat_conversation_name,
     build_topic_chat_id,
     derive_stream_id,
+    qchat_channel_display_name,
     qchat_context_text,
     qchat_media_fallback_text,
     resolve_topic_id,
@@ -404,10 +406,24 @@ class HermesNimAdapter(BasePlatformAdapter):
         message_id = str(payload.get("message_id") or payload.get("client_message_id") or "")
         message_type = self._to_message_type(str(payload.get("message_type") or "text"))
         media_urls, media_types = await self._load_media_attachments(payload, message_type)
-        conversation_name = append_topic_to_conversation_name(
+        raw_conversation_name = append_topic_to_conversation_name(
             payload.get("conversation_name"),
             payload.get("topic_name"),
         )
+        if session_type == "qchat":
+            channel_display_name = qchat_channel_display_name(
+                raw_conversation_name,
+                server_id,
+                channel_id,
+            )
+            conversation_name = build_qchat_conversation_name(
+                channel_display_name,
+                server_id,
+                channel_id,
+            )
+        else:
+            channel_display_name = raw_conversation_name
+            conversation_name = raw_conversation_name
         source = SessionSource(
             platform=Platform("nim"),
             chat_id=chat_id,
@@ -420,7 +436,7 @@ class HermesNimAdapter(BasePlatformAdapter):
         return MessageEvent(
             text=qchat_context_text(
                 payload.get("text"),
-                conversation_name,
+                channel_display_name,
                 payload.get("channel_topic"),
             ) if session_type == "qchat" else str(payload.get("text") or ""),
             message_type=message_type,
